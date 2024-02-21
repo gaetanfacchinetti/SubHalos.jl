@@ -3,6 +3,10 @@ uuid = "eb1a1f42-d770-44a6-854c-d52d525a41cb"
 authors = ["Gaétan Facchinetti"]
 version = "1.0.0-DEV"
 
+[deps]
+CosmoTools = "fab82211-602b-461d-8fab-2b676713216d"
+HostHalos = "9758ad2b-40e1-4c0d-bfef-dec73165ab59"
+
 [compat]
 julia = "1"
 
