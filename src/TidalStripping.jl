@@ -1,4 +1,4 @@
-export jacobi_scale, disk_shocking_tidal_radius
+export jacobi_scale, disk_shocking_tidal_radius, tidal_scale
 
 ################################################
 ## Jacobi Radius
@@ -35,10 +35,10 @@ jacobi_radius(r::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}) = subhalo
 adiabatic_correction(η::Real) = (1+η^2)^(-3/2)
 
 function adiabatic_correction(r_sub::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real})
-    hd = host.stars.thick_zd
-    σz = host.circular_velocity_kms(r_host) / sqrt(2)
+    hd = host.stars.thick_zd # in Mpc
+    σz = host.circular_velocity_kms(r_host) / sqrt(2) # in km/s
     td = hd * MPC_TO_KM / σz # in s
-    ωd = orbital_frequency(r_sub, subhalo) # in s^{-1}
+    ωd = orbital_frequency(r_sub, subhalo) # in 1/s
     η = td * ωd
     return adiabatic_correction(η)
 end
@@ -53,11 +53,11 @@ end
 
 """ Tidal radius after one crossing of the disk in units of the scale radius """
 function disk_shocking_tidal_radius(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real})
-    _to_bissect(x::Real) = angle_average_energy_shock(x * subhalo.rs, r_host, subhalo, host) / abs(gravitational_potential(x, x_init, subhalo.hp)) -1.0
-    return exp(Roots.find_zero(lnx -> _to_bissect(exp(lnx)), (1e-6, x_init), Roots.Bisection()))
+    _to_bissect(x::Real) = angle_average_energy_shock(x * subhalo.rs, r_host, subhalo, host) / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)) -1.0
+    return exp(Roots.find_zero(lnx -> _to_bissect(exp(lnx)), (log(1e-6), log(x_init)), Roots.Bisection()))
 end
 
-""" Tidal radius after n_cross crossing of the disk in units of the scale radius"""
+""" Tidal radius after n_cross crossing of the disk in units of the scale radius """
 function disk_shocking_tidal_radius(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}, n_cross::Int)
 
     xt = x_init
@@ -78,10 +78,10 @@ function baryonic_tides(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host:
     return disk_shocking_tidal_radius(x_init, r_host, subhalo, host, n_cross)
 end
 
-function tidal_scale(r_host::Real, subhalo::Halo{<:Real}, z::Real = 0, cosmo::Cosmology = planck18)
+function tidal_scale(r_host::Real, subhalo::Halo{<:Real}, host::HostModel = milky_way_MM17_g1, z::Real = 0.0, cosmo::Cosmology = planck18)
 
     xt = jacobi_scale(r_host, subhalo, host)
-    n_cross = number_circular_orbits(r_host, host, z, cosmo)
+    n_cross = number_circular_orbits(r_host, host, z, cosmo.bkg)
     return baryonic_tides(xt, r_host, subhalo, host, n_cross)
 
 end

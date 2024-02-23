@@ -6,6 +6,8 @@ version = "1.0.0-DEV"
 [deps]
 CosmoTools = "fab82211-602b-461d-8fab-2b676713216d"
 HostHalos = "9758ad2b-40e1-4c0d-bfef-dec73165ab59"
+QuadGK = "1fd47b50-473d-5c70-9696-f719f8f3bcdc"
+Roots = "f2b01f46-fcfa-551c-844a-d8ac1e96c665"
 
 [compat]
 julia = "1"
