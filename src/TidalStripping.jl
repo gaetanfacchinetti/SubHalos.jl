@@ -15,18 +15,33 @@ More precisely, returns `xt` solution to
 with `` reduced sperical host density being
 `` = \frac{4\pi}{3} r^3 \frac{\rho_{\rm host}(r)}{m_{\rm host}(r)}``
 """
-function jacobi_scale(r::Real, ρs::Real, hp::HaloProfile, ρ_host::Real, m_host::Real)
-    reduced_ρ =  4 * π * r^3 *  ρ_host / 3.0 / m_host
-    to_zero(xt::Real) = xt^3/μ_halo(xt, hp) - ρs/ρ_host * reduced_ρ / (1.0 - reduced_ρ)
-    return exp(Roots.find_zero(lnxt -> to_zero(exp(lnxt)), (-5, +5), Roots.Bisection())) 
+function jacobi_scale(r_host::Real, ρs::Real, hp::HaloProfile, ρ_host::Real, m_host::Real)
+    
+    reduced_ρ =  4 * π * r_host^3 *  ρ_host / 3.0 / m_host
+    _to_bisect(xt::Real) = xt^3/μ_halo(xt, hp) - ρs/ρ_host * reduced_ρ / (1.0 - reduced_ρ)
+    
+    res = 0.0
+
+    try
+        res = exp(Roots.find_zero(lnxt -> _to_bisect(exp(lnxt)), (log(1e-10), log(1e+3)), Roots.Bisection(), xrtol = 1e-3)) 
+    catch e
+        msg = "Impossible to compute the jacobi scale for " * string(hp) *  " | c200 (planck18) = " * string(cΔ_from_ρs(ρs, hp, 200, planck18)) * "\n" * e.msg
+        throw(ArgumentError(msg))
+    end
+
+    return res
 end
 
 
-jacobi_scale(r::Real, ρs::Real, hp::HaloProfile, host::HostModel{<:Real}) = jacobi_scale(r, ρs, hp, host.ρ_host_spherical(r), host.m_host_spherical(r))
-jacobi_scale(r::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}) = jacobi_scale(r, subhalo.ρs, subhalo.hp, host)
-jacobi_scale(r::Real, subhalo::Halo{<:Real}, ρ_host::Real, m_host::Real) = jacobi_scale(r, subhalo.ρs, subhalo.hp,  ρ_host, m_host)
+jacobi_scale(r_host::Real, ρs::Real, hp::HaloProfile, host::HostModel{<:Real}) = jacobi_scale(r_host, ρs, hp, host.ρ_host_spherical(r_host), host.m_host_spherical(r_host))
+jacobi_scale(r_host::Real, subhalo::Halo{<:Real}, ρ_host::Real, m_host::Real) = jacobi_scale(r_host, subhalo.ρs, subhalo.hp,  ρ_host, m_host)
+jacobi_scale(r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}) = jacobi_scale(r_host, subhalo.ρs, subhalo.hp, host)
 
-jacobi_radius(r::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}) = subhalo.rs * jacobi_scale(r, subhalo.ρs, subhalo.hp, host)
+jacobi_scale_DM_only(r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}) = jacobi_scale(r_host, subhalo.ρs, subhalo.hp, ρ_halo(r_host, host.halo), m_halo(r_host, host.halo))
+
+jacobi_radius(r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}) = subhalo.rs * jacobi_scale(r_host, subhalo.ρs, subhalo.hp, host)
+
+jacobi_radius_DM_only(r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}) = subhalo.rs * jacobi_scale_DM_only(r_host, subhalo.ρs, subhalo.hp, host)
 
 
 ################################################
@@ -34,6 +49,7 @@ jacobi_radius(r::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}) = subhalo
 
 adiabatic_correction(η::Real) = (1+η^2)^(-3/2)
 
+""" correction factor for adiabatic shocks (Gnedin)"""
 function adiabatic_correction(r_sub::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real})
     hd = host.stars.thick_zd # in Mpc
     σz = host.circular_velocity_kms(r_host) / sqrt(2) # in km/s
@@ -43,7 +59,6 @@ function adiabatic_correction(r_sub::Real, r_host::Real, subhalo::Halo{<:Real}, 
     return adiabatic_correction(η)
 end
 
-## NEED TO IMPLEMENT σ_baryons
 """ Energy gained by particle mass in a single crossing of th disk (in Mpc / s)^2 """
 function angle_average_energy_shock(r_sub::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real})
     disc_acceleration = 2.0 * π * G_NEWTON * host.σ_baryons(r_host) # in Mpc / s^2
@@ -53,8 +68,20 @@ end
 
 """ Tidal radius after one crossing of the disk in units of the scale radius """
 function disk_shocking_tidal_radius(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real})
-    _to_bissect(x::Real) = angle_average_energy_shock(x * subhalo.rs, r_host, subhalo, host) / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)) -1.0
-    return exp(Roots.find_zero(lnx -> _to_bissect(exp(lnx)), (log(1e-6), log(x_init)), Roots.Bisection()))
+    _to_bisect(x::Real) = angle_average_energy_shock(x * subhalo.rs, r_host, subhalo, host) / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)) -1.0
+    
+    res = -1.0 
+    
+    try
+        res = exp(Roots.find_zero(lnx -> _to_bisect(exp(lnx)), (log(1e-10), log(x_init)), Roots.Bisection(), xrtol = 1e-3))
+    catch e
+        msg = "Impossible to compute the jacobi scale for " * string(subhalo) * "\n" * e.msg
+        throw(ArgumentError(msg))
+        return 0.0
+    end
+
+    return res
+
 end
 
 """ Tidal radius after n_cross crossing of the disk in units of the scale radius """
@@ -63,7 +90,7 @@ function disk_shocking_tidal_radius(x_init::Real, r_host::Real, subhalo::Halo{<:
     xt = x_init
 
     for i in 1:n_cross
-        (xt < 1e-6) && return 0.0
+        (xt < 1e-10) && return 0.0
         xt = disk_shocking_tidal_radius(xt, r_host, subhalo, host)
     end
 
