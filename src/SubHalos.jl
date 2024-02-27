@@ -9,5 +9,6 @@ import HostHalos: HostModel, number_circular_orbits, milky_way_MM17_g1, number_c
 
 include("./TidalStripping.jl")
 include("./FSL.jl")
+include("./TidalMass.jl")
 
 end
