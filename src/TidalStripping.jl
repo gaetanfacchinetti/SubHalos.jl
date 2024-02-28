@@ -1,4 +1,4 @@
-export jacobi_scale, disk_shocking_tidal_radius, tidal_scale
+export jacobi_scale, jacobi_scale_DM_only, disk_shocking_tidal_radius, tidal_scale, angle_average_energy_shock
 
 ################################################
 ## Jacobi Radius
@@ -18,12 +18,12 @@ with `` reduced sperical host density being
 function jacobi_scale(r_host::Real, ρs::Real, hp::HaloProfile, ρ_host::Real, m_host::Real)
     
     reduced_ρ =  4 * π * r_host^3 *  ρ_host / 3.0 / m_host
-    _to_bisect(xt::Real) = xt^3/μ_halo(xt, hp) - ρs/ρ_host * reduced_ρ / (1.0 - reduced_ρ)
+    _to_bisect(xt::Real) = xt^3 / μ_halo(xt, hp) - (ρs / ρ_host) * reduced_ρ / (1.0 - reduced_ρ)
     
     res = 0.0
 
     try
-        res = exp(Roots.find_zero(lnxt -> _to_bisect(exp(lnxt)), (log(1e-10), log(1e+3)), Roots.Bisection(), xrtol = 1e-3)) 
+        res = exp(Roots.find_zero(lnxt -> _to_bisect(exp(lnxt)), (log(1e-10), log(1e+4)), Roots.Bisection(), xrtol = 1e-3)) 
     catch e
         msg = "Impossible to compute the jacobi scale for " * string(hp) *  " | c200 (planck18) = " * string(cΔ_from_ρs(ρs, hp, 200, planck18)) * "\n" * e.msg
         throw(ArgumentError(msg))
@@ -68,16 +68,24 @@ end
 
 """ Tidal radius after one crossing of the disk in units of the scale radius """
 function disk_shocking_tidal_radius(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real})
-    _to_bisect(x::Real) = angle_average_energy_shock(x * subhalo.rs, r_host, subhalo, host) / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)) -1.0
+   
+    _to_bisect(x::Real) = angle_average_energy_shock(x * subhalo.rs, r_host, subhalo, host) / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)) - 1.0
     
     res = -1.0 
     
     try
-        res = exp(Roots.find_zero(lnx -> _to_bisect(exp(lnx)), (log(1e-10), log(x_init)), Roots.Bisection(), xrtol = 1e-3))
+        res = exp(Roots.find_zero(lnx -> _to_bisect(exp(lnx)), (log(1e-15), log(x_init)), Roots.Bisection(), xrtol = 1e-6))
     catch e
-        msg = "Impossible to compute the jacobi scale for " * string(subhalo) * "\n" * e.msg
-        throw(ArgumentError(msg))
-        return 0.0
+        if isa(e, ArgumentError)
+            
+            # if even at the smallest value the energy kick is above the potential then put xt = 0
+            (_to_bisect(1e-15) >= 0) && (return 0)
+
+            msg = "Impossible to compute the jacobi scale for " * string(subhalo) * "\n" * e.msg
+            throw(ArgumentError(msg))
+        else
+            throw(e)
+        end
     end
 
     return res
@@ -90,8 +98,8 @@ function disk_shocking_tidal_radius(x_init::Real, r_host::Real, subhalo::Halo{<:
     xt = x_init
 
     for i in 1:n_cross
-        (xt < 1e-10) && return 0.0
         xt = disk_shocking_tidal_radius(xt, r_host, subhalo, host)
+        (xt == 0) && (return 0)
     end
 
     return xt
@@ -105,15 +113,15 @@ function baryonic_tides(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host:
     return disk_shocking_tidal_radius(x_init, r_host, subhalo, host, n_cross)
 end
 
-function tidal_scale(r_host::Real, subhalo::Halo{<:Real}, host::HostModel = milky_way_MM17_g1, z::Real = 0.0, cosmo::Cosmology = planck18)
+function tidal_scale(r_host::Real, subhalo::Halo{<:Real}, host::HostModel = milky_way_MM17_g1, z::Real = 0.0, Δ::Real = 200, cosmo::Cosmology = planck18)
 
-    xt = jacobi_scale(r_host, subhalo, host)
-    n_cross = number_circular_orbits(r_host, host, z, cosmo.bkg)
+    xt = min(jacobi_scale(r_host, subhalo, host), cΔ(subhalo, Δ, cosmo))
+    n_cross = 2 * number_circular_orbits(r_host, host, z, cosmo.bkg)
     return baryonic_tides(xt, r_host, subhalo, host, n_cross)
 
 end
 
-tidal_radius(r_host::Real, subhalo::Halo{<:Real}, z::Real = 0, cosmo::Cosmology = planck18) = tidal_scale(r_host, subhalo, z, cosmo) * subhalo.rs
+tidal_radius(r_host::Real, subhalo::Halo{<:Real}, z::Real = 0,  Δ::Real = 200, cosmo::Cosmology = planck18) = tidal_scale(r_host, subhalo, z, Δ, cosmo) * subhalo.rs
 
 
 ## IMPLEMENT σ_baryons

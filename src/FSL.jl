@@ -24,9 +24,6 @@ struct FSLParamsPL{T<:Real} <: FSLParams{T}
 
     # to be properly implemented in the future
     z::T
-
-    # other properties
-    max_concentration::T
 end
 
 struct FSLParamsMT{T<:Real} <: FSLParams{T}
@@ -43,9 +40,6 @@ struct FSLParamsMT{T<:Real} <: FSLParams{T}
 
     # to be properly implemented in the future
     z::T
-
-    # other properties
-    max_concentration::T
 end
 
 # definition of length and iterator on our struct
@@ -54,8 +48,8 @@ Base.length(::FSLParams) = 1
 Base.iterate(iter::FSLParams) = (iter, nothing)
 Base.iterate(::FSLParams, state::Nothing) = nothing
 
-FSLParamsPL(α_m::Real, ϵ_t::Real, m_min::Real, mass_frac::Real = 0.11, x1_frac::Real = 2.2e-6, x2_frac::Real = 8.8e-4, z::Real = 0.0, max_concentration::Real = 500.0) = FSLParamsPL(promote(α_m, ϵ_t, m_min, mass_frac, x1_frac, x2_frac, z, max_concentration)...)
-FSLParamsMT(γ_1::Real, α_1::Real, γ_2::Real, α_2::Real, β::Real, ζ::Real, ϵ_t::Real, m_min::Real, z::Real = 0.0, max_concentration::Real = 500.0) = FSLParamsMT(promote(γ_1, α_1, γ_2, α_2, β, ζ, ϵ_t, m_min, z, max_concentration)...)
+FSLParamsPL(α_m::Real, ϵ_t::Real, m_min::Real, mass_frac::Real = 0.11, x1_frac::Real = 2.2e-6, x2_frac::Real = 8.8e-4, z::Real = 0.0) = FSLParamsPL(promote(α_m, ϵ_t, m_min, mass_frac, x1_frac, x2_frac, z)...)
+FSLParamsMT(γ_1::Real, α_1::Real, γ_2::Real, α_2::Real, β::Real, ζ::Real, ϵ_t::Real, m_min::Real, z::Real = 0.0) = FSLParamsMT(promote(γ_1, α_1, γ_2, α_2, β, ζ, ϵ_t, m_min, z)...)
 
 struct FSLContext{T<:Real}
     cosmo::Cosmology{T}
@@ -71,7 +65,10 @@ struct FSLOptions
     tidal_effects::Symbol
     mass_concentration_model::Symbol
     use_tables::Bool
+    c_max::Real
 end
+
+FSLOptions(tidal_effects::Symbol, mass_concentration_model::Symbol, use_tables::Bool) = FSLOptions(tidal_effects, mass_concentration_model, use_tables, 500.0)
 
 mutable struct FSLModel{T<:Real}
 
@@ -79,12 +76,13 @@ mutable struct FSLModel{T<:Real}
     const context::FSLContext{T}
     const options::FSLOptions
 
+    tidal_scale::Union{Nothing, Function}
     min_concentration::Union{Nothing, Function}
     min_concentration_mt::Union{Nothing, Function}
     min_concentration_calibration::Union{Nothing, Function}
 end
 
-FSLModel(params::FSLParams{<:Real}, context::FSLContext{<:Real}, options::FSLOptions) = FSLModel(params, context, options, nothing, nothing, nothing)
+FSLModel(params::FSLParams{<:Real}, context::FSLContext{<:Real}, options::FSLOptions) = FSLModel(params, context, options, nothing, nothing, nothing, nothing)
 
 # definition of length and iterator on our struct
 # allows to use f.(x, y) where y is of type FSLModel
@@ -97,7 +95,8 @@ function Base.getproperty(obj::FSLModel, s::Symbol)
 
     # we load the data if necessary
     if getfield(obj, s) === nothing
-        setfield!(obj, s, _load(obj, s))
+        (s === :tidal_scale) && setfield!(obj, s, _load_tidal_scale(obj))
+        (s !== :tidal_scale) && setfield!(obj, s, _load(obj, s))
     end
 
     return getfield(obj, s)
@@ -105,29 +104,38 @@ end
 
 
 # definition of a constant model
-const dflt_FSLOptions::FSLOptions   = FSLOptions(:all, :SCP12, true)
+const dflt_FSLOptions::FSLOptions   = FSLOptions(:all, :SCP12, true, 500.0)
 const dflt_FSLContext::FSLContext   = FSLContext(planck18, milky_way_MM17_g1, nfwProfile)
-const dflt_FSLParamsPL::FSLParamsPL = FSLParamsPL(1.95, 1e-2, 1e-6, 0.0, 500.0)
-const dflt_FSLParamsMT::FSLParamsMT = FSLParamsMT(0.019, 1.94, 0.464, 1.58, 24.0, 3.4, 1e-2, 1e-6, 0.0, 500.0)
+const dflt_FSLParamsPL::FSLParamsPL = FSLParamsPL(1.95, 1e-2, 1e-6, 0.0)
+const dflt_FSLParamsMT::FSLParamsMT = FSLParamsMT(0.019, 1.94, 0.464, 1.58, 24.0, 3.4, 1e-2, 1e-6, 0.0)
 
 dflt_FSLModel::FSLModel = FSLModel(dflt_FSLParamsPL, dflt_FSLContext, dflt_FSLOptions)
+
+
+""" tidal scale in terms of the parameters of the model, r_host, c200 and m200 """
+tidal_scale(r_host::Real, c200::Real, m200::Real, model::FSLModel{<:Real}) = tidal_scale(r_host, halo_from_mΔ_and_cΔ(model.context.subhalo_profile, m200, c200, Δ=200.0, ρ_ref = model.context.cosmo.bkg.ρ_c0), model.context.host, model.params.z, 200, model.context.cosmo) 
 
 
 """ minimal concentration of surviving halos at position r_host (Mpc) with mass m200 (Msun) """
 function min_concentration(r_host::Real, m200::Real, model::FSLModel{<:Real} = dflt_FSLModel)
 
-    max_c = model.params.max_concentration
+    max_c = model.options.c_max
     res = -1.0
 
     # here we compare xt = rt/rs to the parameter ϵ_t
     function _to_bisect(c200::Real) 
+        
+        # if we use interpolation tables then we use the interpolation tables        
+        (model.options.use_tables) && (return model.tidal_scale(r_host, c200, m200) / model.params.ϵ_t - 1.0)
+
         subhalo = halo_from_mΔ_and_cΔ(model.context.subhalo_profile, m200, c200, Δ=200.0, ρ_ref = model.context.cosmo.bkg.ρ_c0)
-        return tidal_scale(r_host, subhalo, model.context.host, model.params.z, model.context.cosmo) / model.params.ϵ_t - 1.0
+        return tidal_scale(r_host, subhalo, model.context.host, model.params.z, 200, model.context.cosmo) / model.params.ϵ_t - 1.0
     end
 
     try
         res = Roots.find_zero(c200 -> _to_bisect(c200), (1.0, max_c), Roots.Bisection(), xrtol=1e-3)
     catch e
+        
         if isa(e, ArgumentError)
             # if the problem is that at large c we still have xt < ϵ_t then the min concentration is set to the max value of c
             (_to_bisect(max_c) <= 0.0) && (return max_c)
@@ -143,14 +151,14 @@ end
 """ minimal concentration of surviving halos at position r_host (Mpc) with mass m200 (Msun) not including baryons """
 function min_concentration_calibration(r_host::Real, m200::Real, model::FSLModel{<:Real} = dflt_FSLModel)
 
-    max_c = model.params.max_concentration
+    max_c = model.options.c_max
     res = -1.0
 
     # here we compare xt = rt/rs to the parameter ϵ_t
     # for calibration on DM-only simulation only the Jacobi radius matters and ϵ_t = 1
     function _to_bisect(c200::Real) 
         subhalo = halo_from_mΔ_and_cΔ(model.context.subhalo_profile, m200, c200, Δ=200.0, ρ_ref = model.context.cosmo.bkg.ρ_c0)
-        return jacobi_scale_DM_only(r_host, subhalo, model.context.host)  - 1.0
+        return min(jacobi_scale_DM_only(r_host, subhalo, model.context.host), c200)  - 1.0
     end
 
     try
@@ -189,7 +197,7 @@ function _mass_fraction(m1::Real, m2::Real, model::FSLModel{<:Real}; calibration
     _to_integrate_on_m(r_host::Real, m::Real) = m * pdf_virial_mass(m, model.context.m200_host, model.params) * (calibration ? ccdf_concentration_calibration(r_host, m, model) : ccdf_concentration(r_host, m, model)) 
     _to_integrate_on_r(r_host::Real) = QuadGK.quadgk(lnm -> _to_integrate_on_m(r_host, exp(lnm))*exp(lnm), log(m1), log(m2), rtol = 1e-3)[1] * pdf_position(r_host, model)
     
-    r_min = 1e-3 * model.context.host.halo.rs
+    r_min = 1e-2 * model.context.host.halo.rs
     r_max = model.context.host.rt
 
     return QuadGK.quadgk(lnr -> _to_integrate_on_r(exp(lnr))*exp(lnr), log(r_min), log(r_max), rtol = 1e-3)[1] / model.context.m200_host
@@ -277,8 +285,8 @@ function subhalo_mass_function_template_MT(x::Real, γ1::Real,  α1::Real, γ2::
 end
 
 
-pdf_virial_mass(mΔ_sub::Real, mΔ_host::Real, params::FSLParamsPL{<:Real}) = (params.α_m-1.0) * mΔ_host^(params.α_m - 1.0) * 1.0/( (mΔ_host/params.m_min)^(params.α_m - 1.0) - 1.0 ) * mΔ_sub^(-params.α_m)
-pdf_virial_mass(mΔ_sub::Real, mΔ_host::Real, params::FSLParamsMT{<:Real}) = subhalo_mass_function_template_MT(mΔ_sub / mΔ_host, params.γ_1, params.α_1, params.γ_2, params.α_2, params.β, params.ζ) / mΔ_host / unevolved_number_subhalos(mΔ_host, params)
+pdf_virial_mass(mΔ_sub::Real, mΔ_host::Real, params::FSLParamsPL{<:Real}) = mΔ_sub > params.m_min ? (params.α_m-1.0) * mΔ_host^(params.α_m - 1.0) * 1.0/( (mΔ_host/params.m_min)^(params.α_m - 1.0) - 1.0 ) * mΔ_sub^(-params.α_m) : 0.0
+pdf_virial_mass(mΔ_sub::Real, mΔ_host::Real, params::FSLParamsMT{<:Real}) = mΔ_sub > params.m_min ? subhalo_mass_function_template_MT(mΔ_sub / mΔ_host, params.γ_1, params.α_1, params.γ_2, params.α_2, params.β, params.ζ) / mΔ_host / unevolved_number_subhalos(mΔ_host, params) : 0.0
 
 
 @doc raw""" 
@@ -334,8 +342,79 @@ pdf_position(r::Real, model::FSLModel) =  4 * π  * r^2 * ρ_halo(r, model.conte
 
 cache_location::String = ".cache/"
 
-const _NPTS_R = 200
-const _NPTS_M = 200
+const _NPTS_R = 100
+const _NPTS_M = 100
+const _NPTS_C = 100
+
+function _save_tidal_scale(model::FSLModel)
+    
+    rs = model.context.host.halo.rs
+    rt = model.context.host.rt
+    
+    @info "| Saving tidal_scale in cache" 
+    r = 10.0.^range(log10(1e-2 * rs), log10(rt), _NPTS_R)
+    c = 10.0.^range(0, log10(model.options.c_max), _NPTS_C)
+    m = nothing
+
+    # Loading all the tabulated values for the host in order  
+    # to avoid clashes between different threads in the following
+    preload!(model.context.host)
+
+    if (model.options.tidal_effects in [:jacobi_disk, :jacobi])
+
+        # here we do not have any dependance on the mass
+        # skip saving the table in terms of the mass for efficiency
+        # moreover use parallelisation as every point is independant
+
+        y = Array{Float64}(undef, _NPTS_R, _NPTS_C)
+        Threads.@threads for ir in 1:_NPTS_R 
+            for ic in 1:_NPTS_C 
+                y[ir, ic] = tidal_scale(r[ir], c[ic], 1.0, model)
+            end
+        end
+    else
+        m = 10.0.^range(-15, 12, _NPTS_M)
+        y = Array{Float64}(undef, _NPTS_R, _NPTS_C, _NPTS_M)
+    end
+
+    hash_value = hash((model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile, model.options.c_max, model.params.z, model.options.tidal_effects))
+    JLD2.jldsave(cache_location * "tidal_scale_" * string(hash_value, base=16) * ".jld2" ; r = r, m = m, c = c, y = y)
+
+    return true
+end
+
+
+
+## Possibility to interpolate the model
+function _load_tidal_scale(model::FSLModel)
+
+    hash_value = hash((model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile, model.options.c_max, model.params.z, model.options.tidal_effects))
+    
+    !(isdir(cache_location)) && mkdir(cache_location)
+    filenames  = readdir(cache_location)
+    file       = "tidal_scale" * "_" * string(hash_value, base=16) * ".jld2" 
+
+    !(file in filenames) && _save_tidal_scale(model)
+
+    data    = JLD2.jldopen(cache_location * file)
+
+    r = data["r"]
+    m = data["m"]
+    c = data["c"]
+    y = data["y"]
+
+    if (model.options.tidal_effects in [:jacobi_disk, :jacobi])
+        log10_y = Interpolations.interpolate((log10.(r), log10.(c)), log10.(y),  Interpolations.Gridded(Interpolations.Linear()))
+        function return_func(r::Real, c::Real, m::Real = 1.0)
+            res = 10.0^log10_y(log10(r), log10(c))
+            (res === NaN) && return -Inf
+            return res 
+        end
+    else
+        # to be implemented
+    end
+
+end
 
 function _save(model::FSLModel, s::Symbol)
     
@@ -343,10 +422,10 @@ function _save(model::FSLModel, s::Symbol)
     rt = model.context.host.rt
     
     @info "| Saving " * string(s) * " in cache" 
-    r = 10.0.^range(log10(1e-3 * rs), log10(rt), _NPTS_R)
+    r = 10.0.^range(log10(1e-2 * rs), log10(rt), _NPTS_R)
     m = nothing
 
-    if ((model.options.tidal_effects in [:jacobi_disk, :jacobi]) || (s === :min_concentration_calibration))
+    if ((model.options.tidal_effects in [:jacobi_disk, :jacobi]) || (s === :min_concentration_calibration)) && (s !== :min_concentration_mt)
         # here we do not have any dependance on the mass
         # skip saving the table in terms of the mass for efficiency
         y = @eval $s.($(Ref(r))[], 1.0, $(Ref(model))[])
@@ -356,9 +435,9 @@ function _save(model::FSLModel, s::Symbol)
     end
 
     if (s === :min_concentration_calibration)
-        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.params.max_concentration, model.params.z))
+        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.options.c_max, model.params.z))
     else
-        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.params.ϵ_t, model.params.max_concentration, model.params.z, model.options.tidal_effects))
+        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.params.ϵ_t, model.options.c_max, model.params.z, model.options.tidal_effects))
     end
 
     JLD2.jldsave(cache_location * string(s)  * "_" * string(hash_value, base=16) * ".jld2" ; r = r, m = m, y = y)
@@ -372,9 +451,9 @@ end
 function _load(model::FSLModel, s::Symbol)
 
     if (s === :min_concentration_calibration)
-        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.params.max_concentration, model.params.z))
+        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.options.c_max, model.params.z))
     else
-        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.params.ϵ_t, model.params.max_concentration, model.params.z, model.options.tidal_effects))
+        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.params.ϵ_t, model.options.c_max, model.params.z, model.options.tidal_effects))
     end
     
     
@@ -390,7 +469,7 @@ function _load(model::FSLModel, s::Symbol)
     m = data["m"]
     y = data["y"]
 
-    if ((model.options.tidal_effects in [:jacobi_disk, :jacobi]) || (s === :min_concentration_DM_only))
+    if ((model.options.tidal_effects in [:jacobi_disk, :jacobi]) || (s === :min_concentration_DM_only)) && (s !== :min_concentration_mt)
         log10_y = Interpolations.interpolate((log10.(r),), log10.(y),  Interpolations.Gridded(Interpolations.Linear()))
         return (r::Real, m::Real = 1.0) -> 10.0^log10_y(log10(r))
     else
