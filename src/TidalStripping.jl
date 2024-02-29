@@ -1,4 +1,4 @@
-export jacobi_scale, jacobi_scale_DM_only, disk_shocking_tidal_radius, tidal_scale, angle_average_energy_shock
+export jacobi_scale, jacobi_scale_DM_only, disk_shocking_tidal_radius, tidal_scale, angle_average_energy_shock, baryons_tidal_scale
 
 ################################################
 ## Jacobi Radius
@@ -25,7 +25,7 @@ function jacobi_scale(r_host::Real, ρs::Real, hp::HaloProfile, ρ_host::Real, m
     try
         res = exp(Roots.find_zero(lnxt -> _to_bisect(exp(lnxt)), (log(1e-10), log(1e+4)), Roots.Bisection(), xrtol = 1e-3)) 
     catch e
-        msg = "Impossible to compute the jacobi scale for " * string(hp) *  " | c200 (planck18) = " * string(cΔ_from_ρs(ρs, hp, 200, planck18)) * "\n" * e.msg
+        msg = "Impossible to compute the jacobi scale at rhost = " * r_host * " Mpc for " * string(hp) *  " | c200 (planck18) = " * string(cΔ_from_ρs(ρs, hp, 200, planck18)) * " [min, med, max] = " * _to_bisect.([1e-10, sqrt(1e-10 * 1e+4), 1e+4]) * "\n" * e.msg
         throw(ArgumentError(msg))
     end
 
@@ -44,33 +44,25 @@ jacobi_radius(r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}) = su
 jacobi_radius_DM_only(r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}) = subhalo.rs * jacobi_scale_DM_only(r_host, subhalo.ρs, subhalo.hp, host)
 
 
-################################################
-## Disk shocking
-
-adiabatic_correction(η::Real) = (1+η^2)^(-3/2)
-
-""" correction factor for adiabatic shocks (Gnedin)"""
-function adiabatic_correction(r_sub::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real})
-    hd = host.stars.thick_zd # in Mpc
-    σz = host.circular_velocity_kms(r_host) / sqrt(2) # in km/s
-    td = hd * MPC_TO_KM / σz # in s
-    ωd = orbital_frequency(r_sub, subhalo) # in 1/s
-    η = td * ωd
-    return adiabatic_correction(η)
-end
-
-""" Energy gained by particle mass in a single crossing of th disk (in Mpc / s)^2 """
-function angle_average_energy_shock(r_sub::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real})
-    disc_acceleration = 2.0 * π * G_NEWTON * host.σ_baryons(r_host) # in Mpc / s^2
-    σz = host.circular_velocity_kms(r_host) * KM_TO_MPC / sqrt(2) # in Mpc / s
-    return 2 * (disc_acceleration / σz * r_sub)^2 * adiabatic_correction(r_sub, r_host, subhalo, host) / 3.0;
-end
+#########################################
+# Total baryonic tides
 
 """ Tidal radius after one crossing of the disk in units of the scale radius """
-function disk_shocking_tidal_radius(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real})
+function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}, q::Real, θ::Real, disk::Bool, stars::Bool, use_tables::Bool)
    
-    _to_bisect(x::Real) = angle_average_energy_shock(x * subhalo.rs, r_host, subhalo, host) / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)) - 1.0
-    
+    # if no baryons effect just return x_init
+    !(disk || stars) && (return x_init)
+
+  
+    function _to_bisect(x::Real) 
+        ΔE = 0
+
+        disk && (ΔE += angle_average_energy_shock(x * subhalo.rs, r_host, subhalo, host))
+        stars && (ΔE += 0.7 * average_energy_kick_stars(x, x_init, β_min(q, r_host, subhalo, host, θ, use_tables), r_host, subhalo, host, θ, use_tables))
+
+        return ΔE / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)) - 1.0
+    end
+
     res = -1.0 
     
     try
@@ -81,7 +73,10 @@ function disk_shocking_tidal_radius(x_init::Real, r_host::Real, subhalo::Halo{<:
             # if even at the smallest value the energy kick is above the potential then put xt = 0
             (_to_bisect(1e-15) >= 0) && (return 0)
 
-            msg = "Impossible to compute the jacobi scale for " * string(subhalo) * "\n" * e.msg
+            msg = "Impossible to compute the baryons_tidal scale for (x_init, r_host, q, θ, disk, stars, use_tables) = (" * 
+            string(x_init) * ", " * string(r_host) * ", " * string(q) * ", " * string(θ) * ", " * string(disk) * ", " * 
+            string(stars) * ", " * string(use_tables) * ")" * string(subhalo) * " [vals] = " *
+            string(_to_bisect.(10.0.^range(-15, log10(x_init), 20))) * "\n" * e.msg
             throw(ArgumentError(msg))
         else
             throw(e)
@@ -92,32 +87,29 @@ function disk_shocking_tidal_radius(x_init::Real, r_host::Real, subhalo::Halo{<:
 
 end
 
+
 """ Tidal radius after n_cross crossing of the disk in units of the scale radius """
-function disk_shocking_tidal_radius(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}, n_cross::Int)
+function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}, n_cross::Int, q::Real, θ::Real, disk::Bool, stars::Bool, use_tables::Bool)
+
+    # if no baryons effect just return x_init
+    !(disk || stars) && (return x_init)
 
     xt = x_init
 
     for i in 1:n_cross
-        xt = disk_shocking_tidal_radius(xt, r_host, subhalo, host)
+        xt = baryons_tidal_scale(xt, r_host, subhalo, host, q, θ, disk, stars, use_tables)
         (xt == 0) && (return 0)
     end
 
     return xt
 end
 
-#########################################
-# Total baryonic tides
-
-# Need to add stellar encounters here afterwards
-function baryonic_tides(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}, n_cross::Int)
-    return disk_shocking_tidal_radius(x_init, r_host, subhalo, host, n_cross)
-end
-
-function tidal_scale(r_host::Real, subhalo::Halo{<:Real}, host::HostModel = milky_way_MM17_g1, z::Real = 0.0, Δ::Real = 200, cosmo::Cosmology = planck18)
+function tidal_scale(r_host::Real, subhalo::Halo{<:Real}, host::HostModel = milky_way_MM17_g1, z::Real = 0.0, Δ::Real = 200, cosmo::Cosmology = planck18,
+    q::Real=0.2, θ::Real = π/3, disk::Bool = true, stars::Bool = false, use_tables::Bool = true)
 
     xt = min(jacobi_scale(r_host, subhalo, host), cΔ(subhalo, Δ, cosmo))
     n_cross = 2 * number_circular_orbits(r_host, host, z, cosmo.bkg)
-    return baryonic_tides(xt, r_host, subhalo, host, n_cross)
+    return baryons_tidal_scale(xt, r_host, subhalo, host, n_cross,  q, θ, disk, stars, use_tables)
 
 end
 
