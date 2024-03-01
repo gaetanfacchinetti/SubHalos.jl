@@ -59,9 +59,15 @@ struct FSLContext{T<:Real}
     θ::T # angle between the subhalo's trajectory and the disk
     q::T # fraction of crossing with an impact parameter b > b_0(q)
     m200_host::T
+
+    # defined from the HaloProfile
+    pmtab::PseudoMassTable
 end
 
-FSLContext(cosmo::Cosmology{<:Real} = planck18, host::HostModel{<:Real} = milky_way_MM17_g1, sp::HaloProfile{<:Real} = nfwProfile; θ::Real=π/3, q::Real = 0.2) = FSLContext(cosmo, host, sp, θ, q, mΔ(host.halo, 200, cosmo))
+function FSLContext(cosmo::Cosmology{<:Real} = planck18, host::HostModel{<:Real} = milky_way_MM17_g1, sp::HaloProfile{<:Real} = nfwProfile; θ::Real=π/3, q::Real = 0.2) 
+    pmtab = PseudoMassTable(sp)
+    return FSLContext(cosmo, host, sp, θ, q, mΔ(host.halo, 200, cosmo), pmtab)
+end
 
 # options to run the code
 struct FSLOptions
@@ -119,8 +125,8 @@ dflt_FSLModel::FSLModel = FSLModel(dflt_FSLParamsPL, dflt_FSLContext, dflt_FSLOp
 """ tidal scale in terms of the parameters of the model, r_host, c200 and m200 """
 tidal_scale(r_host::Real, c200::Real, m200::Real, model::FSLModel{<:Real}) = tidal_scale(r_host, 
         halo_from_mΔ_and_cΔ(model.context.subhalo_profile, m200, c200, Δ=200.0, ρ_ref = model.context.cosmo.bkg.ρ_c0), 
-        model.context.host, model.params.z, 200, model.context.cosmo, 
-        model.context.q, model.context.θ, model.options.disk, model.options.stars, model.options.use_tables) 
+        model.context.host, model.params.z, 200, model.context.cosmo,  pmtab = model.context.pmtab,
+        q = model.context.q, θ = model.context.θ, disk = model.options.disk, stars = model.options.stars, use_tables = model.options.use_tables) 
 
 
 """ minimal concentration of surviving halos at position r_host (Mpc) with mass m200 (Msun) """
@@ -349,9 +355,9 @@ pdf_position(r::Real, model::FSLModel) =  4 * π  * r^2 * ρ_halo(r, model.conte
 
 cache_location::String = ".cache/"
 
-const _NPTS_R = 10
-const _NPTS_M = 10
-const _NPTS_C = 10
+const _NPTS_R = 50
+const _NPTS_M = 50
+const _NPTS_C = 50
 
 function _save_tidal_scale(model::FSLModel)
     
@@ -366,6 +372,7 @@ function _save_tidal_scale(model::FSLModel)
     # Loading all the tabulated values for the host in order  
     # to avoid clashes between different threads in the following
     preload!(model.context.host)
+    preload!(model.context.pmtab)
 
     if !(model.options.stars)
 
@@ -374,27 +381,27 @@ function _save_tidal_scale(model::FSLModel)
         # moreover use parallelisation as every point is independant
 
         y = Array{Float64}(undef, _NPTS_R, _NPTS_C)
-        Threads.@threads for ir in 1:_NPTS_R 
-            for ic in 1:_NPTS_C 
+        Threads.@threads for ic in 1:_NPTS_C 
+            for ir in 1:_NPTS_R 
                 y[ir, ic] = tidal_scale(r[ir], c[ic], 1.0, model)
             end
         end
     
     else
 
-        m = 10.0.^range(-15, 12, _NPTS_M)
+        m = 10.0.^range(-15, 15, _NPTS_M)
         y = Array{Float64}(undef, _NPTS_R, _NPTS_C, _NPTS_M)
 
-        Threads.@threads for ir in 1:_NPTS_R
+        Threads.@threads for im in 1:_NPTS_M
             for ic in 1:_NPTS_C
-                for im in 1:_NPTS_M
+                for ir in 1:_NPTS_R
                     y[ir, ic, im] = tidal_scale(r[ir], c[ic], m[im], model)
                 end
             end
         end
     end
 
-    hash_tuple = (model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile, model.options.c_max, model.params.z, model.options.disk, model.options.stars)
+    hash_tuple = (model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.options.c_max, model.params.z, model.options.disk, model.options.stars)
     (model.options.stars) && (hash_tuple = (hash_tuple..., (model.context.q, model.context.θ)...))
     hash_value = hash(hash_tuple)
 
@@ -408,7 +415,7 @@ end
 ## Possibility to interpolate the model
 function _load_tidal_scale(model::FSLModel)
 
-    hash_tuple = (model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile, model.options.c_max, model.params.z, model.options.disk, model.options.stars)
+    hash_tuple = (model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.options.c_max, model.params.z, model.options.disk, model.options.stars)
     (model.options.stars) && (hash_tuple = (hash_tuple..., (model.context.q, model.context.θ)...))
     hash_value = hash(hash_tuple)
 
@@ -434,8 +441,6 @@ function _load_tidal_scale(model::FSLModel)
             (res === NaN) && return -Inf
             return res 
         end
-    
-
 
     else
         log10_y = Interpolations.interpolate((log10.(_r), log10.(_c), log10.(_m)), log10.(_y),  Interpolations.Gridded(Interpolations.Linear()))
@@ -460,19 +465,19 @@ function _save(model::FSLModel, s::Symbol)
     r = 10.0.^range(log10(1e-2 * rs), log10(rt), _NPTS_R)
     m = nothing
 
-    if ((model.options.tidal_effects in [:jacobi_disk, :jacobi]) || (s === :min_concentration_calibration)) && (s !== :min_concentration_mt)
+    if (!(model.options.stars) || (s === :min_concentration_calibration)) && (s !== :min_concentration_mt)
         # here we do not have any dependance on the mass
         # skip saving the table in terms of the mass for efficiency
         y = @eval $s.($(Ref(r))[], 1.0, $(Ref(model))[])
     else
-        m = 10.0.^range(-15, 12, _NPTS_M)
+        m = 10.0.^range(-15, 15, _NPTS_M)
         y = @eval $s.($(Ref(r))[], $(Ref(m))[]', $(Ref(model))[])
     end
 
     if (s === :min_concentration_calibration)
-        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.options.c_max, model.params.z))
+        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.options.c_max, model.params.z))
     else
-        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.params.ϵ_t, model.options.c_max, model.params.z, model.options.disk, model.options.stars))
+        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.params.ϵ_t, model.options.c_max, model.params.z, model.options.disk, model.options.stars))
     end
 
     JLD2.jldsave(cache_location * string(s)  * "_" * string(hash_value, base=16) * ".jld2" ; r = r, m = m, y = y)
@@ -486,9 +491,9 @@ end
 function _load(model::FSLModel, s::Symbol)
 
     if (s === :min_concentration_calibration)
-        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.options.c_max, model.params.z))
+        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.options.c_max, model.params.z))
     else
-        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.params.ϵ_t, model.options.c_max, model.params.z, model.options.disk, model.options.stars))
+        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.params.ϵ_t, model.options.c_max, model.params.z, model.options.disk, model.options.stars))
     end
     
     
@@ -504,7 +509,7 @@ function _load(model::FSLModel, s::Symbol)
     m = data["m"]
     y = data["y"]
 
-    if (!(model.options.stars) || (s === :min_concentration_DM_only)) && (s !== :min_concentration_mt)
+    if (!(model.options.stars) || (s === :min_concentration_calibration)) && (s !== :min_concentration_mt)
         log10_y = Interpolations.interpolate((log10.(r),), log10.(y),  Interpolations.Gridded(Interpolations.Linear()))
         return (r::Real, m::Real = 1.0) -> 10.0^log10_y(log10(r))
     else
