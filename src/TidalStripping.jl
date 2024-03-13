@@ -1,4 +1,4 @@
-export jacobi_scale, jacobi_scale_DM_only, disk_shocking_tidal_radius, tidal_scale, angle_average_energy_shock, baryons_tidal_scale
+export jacobi_scale, jacobi_scale_DM_only, tidal_scale, baryons_tidal_scale
 
 ################################################
 ## Jacobi Radius
@@ -23,7 +23,7 @@ function jacobi_scale(r_host::Real, ρs::Real, hp::HaloProfile, ρ_host::Real, m
     res = 0.0
 
     try
-        res = exp(Roots.find_zero(lnxt -> _to_bisect(exp(lnxt)), (log(1e-10), log(1e+4)), Roots.Bisection(), xrtol = 1e-3)) 
+        res = exp(Roots.find_zero(lnxt -> _to_bisect(exp(lnxt)), (log(1e-10), log(1e+4)), Roots.Bisection(), xrtol = 1e-10)) 
     catch e
         msg = "Impossible to compute the jacobi scale at rhost = " * r_host * " Mpc for " * string(hp) *  " | c200 (planck18) = " * string(cΔ_from_ρs(ρs, hp, 200, planck18)) * " [min, med, max] = " * _to_bisect.([1e-10, sqrt(1e-10 * 1e+4), 1e+4]) * "\n" * e.msg
         throw(ArgumentError(msg))
@@ -56,8 +56,10 @@ function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, 
     function _to_bisect(x::Real) 
         ΔE = 0
 
-        disk && (ΔE += angle_average_energy_shock(x * subhalo.rs, r_host, subhalo, host))
+        disk && (ΔE += angle_average_energy_shock(x * subhalo.rs, x_init * subhalo.rs, r_host, subhalo, host))
         stars && (ΔE += 0.7 * average_energy_kick_stars(x, x_init, β_min(q, r_host, subhalo.rs, host, θ, use_tables), r_host, subhalo.rs, host, pmtab, θ, use_tables))
+
+        #println("Comparison ", x, " ", ΔE / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)))
 
         return ΔE / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)) - 1.0
     end

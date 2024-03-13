@@ -5,7 +5,7 @@ export dflt_FSLParamsPL, dflt_FSLParamsMT, dflt_FSLContext, dflt_FSLOptions, dfl
 export min_concentration, min_concentration_calibration, ccdf_concentration, ccdf_concentration_calibration
 export mass_fraction, normalisation_factor, number_subhalos, unevolved_number_subhalos
 export pdf_virial_mass, pdf_position, pdf_rmc_FSL, pdf_rm_FSL, pdf_r_FSL, pdf_m_FSL, density_rmc_FSL, density_rm_FSL, density_r_FSL, density_m_FSL
-export test_FSL_1, test_FSL_2, test_FSL_3
+export test_FSL_1, test_FSL_2, test_FSL_3, get_hash_tidal_scale
 
 
 abstract type FSLParams{T<:Real} end
@@ -53,15 +53,17 @@ FSLParamsPL(α_m::Real, ϵ_t::Real, m_min::Real, mass_frac::Real = 0.11, x1_frac
 FSLParamsMT(γ_1::Real, α_1::Real, γ_2::Real, α_2::Real, β::Real, ζ::Real, ϵ_t::Real, m_min::Real, z::Real = 0.0) = FSLParamsMT(promote(γ_1, α_1, γ_2, α_2, β, ζ, ϵ_t, m_min, z)...)
 
 struct FSLContext{T<:Real}
+    
     cosmo::Cosmology{T}
     host::HostModel{T}
     subhalo_profile::HaloProfile{<:Real}
+    
     θ::T # angle between the subhalo's trajectory and the disk
     q::T # fraction of crossing with an impact parameter b > b_0(q)
-    m200_host::T
-
-    # defined from the HaloProfile
-    pmtab::PseudoMassTable
+    
+    # Precomputed values
+    m200_host::T               # defined from the HostHalo
+    pmtab::PseudoMassTable     # defined from the HaloProfile
 end
 
 function FSLContext(cosmo::Cosmology{<:Real} = planck18, host::HostModel{<:Real} = milky_way_MM17_g1, sp::HaloProfile{<:Real} = nfwProfile; θ::Real=π/3, q::Real = 0.2) 
@@ -73,12 +75,12 @@ end
 struct FSLOptions
     disk::Bool
     stars::Bool
-    mass_concentration_model::Symbol
+    mc_model::Symbol
     use_tables::Bool
     c_max::Real
 end
 
-FSLOptions(disk::Bool = true, stars::Bool = false, mass_concentration_model::Symbol = :SC12, use_tables::Bool = true) = FSLOptions(disk, stars, mass_concentration_model, use_tables, 500.0)
+FSLOptions(disk::Bool = true, stars::Bool = false, mc_model::Symbol = :SC12, use_tables::Bool = true) = FSLOptions(disk, stars, mc_model, use_tables, 500.0)
 
 mutable struct FSLModel{T<:Real}
 
@@ -192,7 +194,7 @@ end
 function ccdf_concentration(r_host::Real, m200::Real, model::FSLModel{<:Real} = dflt_FSLModel)
     
     c_min = model.options.use_tables ? model.min_concentration(r_host, m200) : min_concentration(r_host, m200, model)
-    return ccdf_concentration(c_min, m200,  model.params.z, model.context.cosmo, (@eval $(model.options.mass_concentration_model)))
+    return ccdf_concentration(c_min, m200,  model.params.z, model.context.cosmo, (@eval $(model.options.mc_model)))
 
 end
 
@@ -200,7 +202,7 @@ end
 function ccdf_concentration_calibration(r_host::Real, m200::Real, model::FSLModel{<:Real} = dflt_FSLModel)
     
     c_min = model.options.use_tables ? model.min_concentration_calibration(r_host, m200) : min_concentration_calibration(r_host, m200, model)
-    return ccdf_concentration(c_min, m200,  model.params.z, model.context.cosmo, (@eval $(model.options.mass_concentration_model)))
+    return ccdf_concentration(c_min, m200,  model.params.z, model.context.cosmo, (@eval $(model.options.mc_model)))
 
 end
 
@@ -333,7 +335,7 @@ function pdf_concentration(c200::Real, m200::Real, z::Real = 0, cosmo::Cosmology
     return 1.0 / Kc / c200 / sqrt(2.0 * π) / σ_c * exp(-(log(c200) - log(median_c))^2 / 2.0 / σ_c^2)
 end
 
-pdf_concentration(c200::Real, m200::Real, model::FSLModel{<:Real}) = pdf_concentration(c200, m200, model.params.z, model.context.cosmo, (@eval $(model.options.mass_concentration_model)))
+pdf_concentration(c200::Real, m200::Real, model::FSLModel{<:Real}) = pdf_concentration(c200, m200, model.params.z, model.context.cosmo, (@eval $(model.options.mc_model)))
 
 function ccdf_concentration(c200::Real,  m200::Real, z::Real, cosmo::Cosmology, ::Type{T}) where {T<:MassConcentrationModel}
     
@@ -401,15 +403,17 @@ function _save_tidal_scale(model::FSLModel)
         end
     end
 
-    hash_tuple = (model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.options.c_max, model.params.z, model.options.disk, model.options.stars)
-    (model.options.stars) && (hash_tuple = (hash_tuple..., (model.context.q, model.context.θ)...))
-    hash_value = hash(hash_tuple)
-
-    JLD2.jldsave(cache_location * "tidal_scale_" * string(hash_value, base=16) * ".jld2" ; r = r, m = m, c = c, y = y)
-
+    JLD2.jldsave(cache_location * "tidal_scale_" * get_hash_tidal_scale(model) * ".jld2" ; r = r, m = m, c = c, y = y)
     return true
 end
 
+
+""" create a hash id for the saved tidal scale data """
+function get_hash_tidal_scale(model::FSLModel)
+    hash_tuple = (model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.options.c_max, model.params.z, model.options.disk, model.options.stars)
+    (model.options.stars) && (hash_tuple = (hash_tuple..., (model.context.q, model.context.θ)...))
+    return string(hash(hash_tuple),  base=16)
+end
 
 
 ## Possibility to interpolate the model
