@@ -1,3 +1,21 @@
+##################################################################################
+# This file is part of SubHalos.jl
+#
+# Copyright (c) 2024, Gaétan Facchinetti
+#
+# SubHalos.jl is free software: you can redistribute it and/or modify it 
+# under the terms of the GNU General Public License as published by 
+# the Free Software Foundation, either version 3 of the License, or any 
+# later version. CosmoTools.jl is distributed in the hope that it will be useful, 
+# but WITHOUT ANY WARRANTY; without even the implied warranty of 
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+# See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU 
+# General Public License along with 21cmCAST. 
+# If not, see <https://www.gnu.org/licenses/>.
+##################################################################################
+
 export subhalo_mass_function_template
 export mass_function_merger_tree
 export FSLParams, FSLParamsPL, FSLParamsMT, FSLContext, FSLOptions, FSLModel
@@ -7,9 +25,7 @@ export mass_fraction, normalisation_factor, number_subhalos, unevolved_number_su
 export pdf_virial_mass, pdf_position, pdf_rmc_FSL, pdf_rm_FSL, pdf_r_FSL, pdf_m_FSL, density_rmc_FSL, density_rm_FSL, density_r_FSL, density_m_FSL
 export test_FSL_1, test_FSL_2, test_FSL_3, get_hash_tidal_scale
 
-
 abstract type FSLParams{T<:Real} end
-
 
 struct FSLParamsPL{T<:Real} <: FSLParams{T}
     
@@ -63,12 +79,13 @@ struct FSLContext{T<:Real}
     
     # Precomputed values
     m200_host::T               # defined from the HostHalo
-    pmtab::PseudoMassTable     # defined from the HaloProfile
+    pp::ProfileProperties      # defined from the HaloProfile
 end
 
+
 function FSLContext(cosmo::Cosmology{<:Real} = planck18, host::HostModel{<:Real} = milky_way_MM17_g1, sp::HaloProfile{<:Real} = nfwProfile; θ::Real=π/3, q::Real = 0.2) 
-    pmtab = PseudoMassTable(sp)
-    return FSLContext(cosmo, host, sp, θ, q, mΔ(host.halo, 200, cosmo), pmtab)
+    pp = ProfileProperties(sp)
+    return FSLContext(cosmo, host, sp, θ, q, mΔ(host.halo, 200, cosmo), pp)
 end
 
 # options to run the code
@@ -102,18 +119,6 @@ Base.length(::FSLModel) = 1
 Base.iterate(iter::FSLModel) = (iter, nothing)
 Base.iterate(::FSLModel, state::Nothing) = nothing
 
-# redefinition of getproperty to instantiate tables
-function Base.getproperty(obj::FSLModel, s::Symbol)
-
-    # we load the data if necessary
-    if getfield(obj, s) === nothing
-        (s === :tidal_scale) && setfield!(obj, s, _load_tidal_scale(obj))
-        (s !== :tidal_scale) && setfield!(obj, s, _load(obj, s))
-    end
-
-    return getfield(obj, s)
-end
-
 
 # definition of a constant model
 const dflt_FSLOptions::FSLOptions   = FSLOptions(true, false, :SCP12, true, 500.0)
@@ -127,7 +132,7 @@ dflt_FSLModel::FSLModel = FSLModel(dflt_FSLParamsPL, dflt_FSLContext, dflt_FSLOp
 """ tidal scale in terms of the parameters of the model, r_host, c200 and m200 """
 tidal_scale(r_host::Real, c200::Real, m200::Real, model::FSLModel{<:Real}) = tidal_scale(r_host, 
         halo_from_mΔ_and_cΔ(model.context.subhalo_profile, m200, c200, Δ=200.0, ρ_ref = model.context.cosmo.bkg.ρ_c0), 
-        model.context.host, model.params.z, 200, model.context.cosmo,  pmtab = model.context.pmtab,
+        model.context.host, model.params.z, 200, model.context.cosmo,  pp = model.context.pp,
         q = model.context.q, θ = model.context.θ, disk = model.options.disk, stars = model.options.stars, use_tables = model.options.use_tables) 
 
 
@@ -352,175 +357,3 @@ end
 pdf_position(r::Real, host::HostModel, cosmo::Cosmology = planck18) = 4 * π  * r^2 * ρ_halo(r, host.halo) / mΔ(host.halo, 200, cosmo)
 pdf_position(r::Real, model::FSLModel) =  4 * π  * r^2 * ρ_halo(r, model.context.host.halo) / model.context.m200_host
 
-
-#############################################################
-
-cache_location::String = ".cache/"
-
-const _NPTS_R = 50
-const _NPTS_M = 50
-const _NPTS_C = 50
-
-function _save_tidal_scale(model::FSLModel)
-    
-    rs = model.context.host.halo.rs
-    rt = model.context.host.rt
-    
-    @info "| Saving tidal_scale in cache" 
-    r = 10.0.^range(log10(1e-2 * rs), log10(rt), _NPTS_R)
-    c = 10.0.^range(0, log10(model.options.c_max), _NPTS_C)
-    m = nothing
-
-    # Loading all the tabulated values for the host in order  
-    # to avoid clashes between different threads in the following
-    preload!(model.context.host)
-    preload!(model.context.pmtab)
-
-    if !(model.options.stars)
-
-        # here we do not have any dependance on the mass
-        # skip saving the table in terms of the mass for efficiency
-        # moreover use parallelisation as every point is independant
-
-        y = Array{Float64}(undef, _NPTS_R, _NPTS_C)
-        Threads.@threads for ic in 1:_NPTS_C 
-            for ir in 1:_NPTS_R 
-                y[ir, ic] = tidal_scale(r[ir], c[ic], 1.0, model)
-            end
-        end
-    
-    else
-
-        m = 10.0.^range(-15, 15, _NPTS_M)
-        y = Array{Float64}(undef, _NPTS_R, _NPTS_C, _NPTS_M)
-
-        Threads.@threads for im in 1:_NPTS_M
-            for ic in 1:_NPTS_C
-                for ir in 1:_NPTS_R
-                    y[ir, ic, im] = tidal_scale(r[ir], c[ic], m[im], model)
-                end
-            end
-        end
-    end
-
-    JLD2.jldsave(cache_location * "tidal_scale_" * get_hash_tidal_scale(model) * ".jld2" ; r = r, m = m, c = c, y = y)
-    return true
-end
-
-
-""" create a hash id for the saved tidal scale data """
-function get_hash_tidal_scale(model::FSLModel)
-    hash_tuple = (model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.options.c_max, model.params.z, model.options.disk, model.options.stars)
-    (model.options.stars) && (hash_tuple = (hash_tuple..., (model.context.q, model.context.θ)...))
-    return string(hash(hash_tuple),  base=16)
-end
-
-
-## Possibility to interpolate the model
-function _load_tidal_scale(model::FSLModel)
-
-    hash_tuple = (model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.options.c_max, model.params.z, model.options.disk, model.options.stars)
-    (model.options.stars) && (hash_tuple = (hash_tuple..., (model.context.q, model.context.θ)...))
-    hash_value = hash(hash_tuple)
-
-    !(isdir(cache_location)) && mkdir(cache_location)
-    filenames  = readdir(cache_location)
-    file       = "tidal_scale" * "_" * string(hash_value, base=16) * ".jld2" 
-
-    !(file in filenames) && _save_tidal_scale(model)
-
-    data    = JLD2.jldopen(cache_location * file)
-
-    _r = data["r"]
-    _m = data["m"]
-    _c = data["c"]
-    _y = data["y"]
-
-    if !(model.options.stars)
-        log10_y = Interpolations.interpolate((log10.(_r), log10.(_c)), log10.(_y),  Interpolations.Gridded(Interpolations.Linear()))
-        
-        return (r::Real, c::Real, m::Real = 1.0) -> 
-        begin
-            res = 10.0^log10_y(log10(r), log10(c))
-            (res === NaN) && return -Inf
-            return res 
-        end
-
-    else
-        log10_y = Interpolations.interpolate((log10.(_r), log10.(_c), log10.(_m)), log10.(_y),  Interpolations.Gridded(Interpolations.Linear()))
-        
-        return (r::Real, c::Real, m::Real) -> 
-        begin
-            res = 10.0^log10_y(log10(r), log10(c), log10(m))
-            (res === NaN) && return -Inf
-            return res 
-        end
-    end
-
-
-end
-
-function _save(model::FSLModel, s::Symbol)
-    
-    rs = model.context.host.halo.rs
-    rt = model.context.host.rt
-    
-    @info "| Saving " * string(s) * " in cache" 
-    r = 10.0.^range(log10(1e-2 * rs), log10(rt), _NPTS_R)
-    m = nothing
-
-    if (!(model.options.stars) || (s === :min_concentration_calibration)) && (s !== :min_concentration_mt)
-        # here we do not have any dependance on the mass
-        # skip saving the table in terms of the mass for efficiency
-        y = @eval $s.($(Ref(r))[], 1.0, $(Ref(model))[])
-    else
-        m = 10.0.^range(-15, 15, _NPTS_M)
-        y = @eval $s.($(Ref(r))[], $(Ref(m))[]', $(Ref(model))[])
-    end
-
-    if (s === :min_concentration_calibration)
-        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.options.c_max, model.params.z))
-    else
-        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.params.ϵ_t, model.options.c_max, model.params.z, model.options.disk, model.options.stars))
-    end
-
-    JLD2.jldsave(cache_location * string(s)  * "_" * string(hash_value, base=16) * ".jld2" ; r = r, m = m, y = y)
-
-    return true
-
-end
-
-
-## Possibility to interpolate the model
-function _load(model::FSLModel, s::Symbol)
-
-    if (s === :min_concentration_calibration)
-        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.options.c_max, model.params.z))
-    else
-        hash_value = hash((model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.params.ϵ_t, model.options.c_max, model.params.z, model.options.disk, model.options.stars))
-    end
-    
-    
-    !(isdir(cache_location)) && mkdir(cache_location)
-    filenames  = readdir(cache_location)
-    file       = string(s) * "_" * string(hash_value, base=16) * ".jld2" 
-
-    !(file in filenames) && _save(model, s)
-
-    data    = JLD2.jldopen(cache_location * file)
-
-    r = data["r"]
-    m = data["m"]
-    y = data["y"]
-
-    if (!(model.options.stars) || (s === :min_concentration_calibration)) && (s !== :min_concentration_mt)
-        log10_y = Interpolations.interpolate((log10.(r),), log10.(y),  Interpolations.Gridded(Interpolations.Linear()))
-        return (r::Real, m::Real = 1.0) -> 10.0^log10_y(log10(r))
-    else
-        log10_y = Interpolations.interpolate((log10.(r), log10.(m)), log10.(y),  Interpolations.Gridded(Interpolations.Linear()))
-        return (r::Real, m::Real) -> 10.0^log10_y(log10(r), log10(m))
-    end
-
-end
-
-#####################################

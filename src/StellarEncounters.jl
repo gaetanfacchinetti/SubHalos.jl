@@ -1,4 +1,23 @@
-export pseudo_mass_I, PseudoMassTable, solve_xt_new, average_δw2_stars, average_δv2_stars, average_δu2_stars, average_energy_kick_stars, b_min, β_min
+##################################################################################
+# This file is part of SubHalos.jl
+#
+# Copyright (c) 2024, Gaétan Facchinetti
+#
+# SubHalos.jl is free software: you can redistribute it and/or modify it 
+# under the terms of the GNU General Public License as published by 
+# the Free Software Foundation, either version 3 of the License, or any 
+# later version. CosmoTools.jl is distributed in the hope that it will be useful, 
+# but WITHOUT ANY WARRANTY; without even the implied warranty of 
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+# See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU 
+# General Public License along with 21cmCAST. 
+# If not, see <https://www.gnu.org/licenses/>.
+##################################################################################
+
+
+export pseudo_mass_I, ProfileProperties, solve_xt_new, average_δw2_stars, average_δv2_stars, average_δu2_stars, average_energy_kick_stars, b_min, β_min
 export moments_relative_velocity_kms, average_inverage_relative_velocity_sqr_kms, average_relative_velocity_kms, average_inverse_relative_velocity_kms
 
 ###################################
@@ -40,78 +59,20 @@ end
 pseudo_mass_I(b::Real, rt::Real, sh::Halo) = pseudo_mass_I(b/sh.rs, rt/sh.rs, sh.hp)
 
 
-mutable struct PseudoMassTable
+mutable struct ProfileProperties
     const hp::HaloProfile{<:Real}
     pseudo_mass_I::Union{Nothing, Function}
+    velocity_dispersion::Union{Nothing, Function}
 end
 
-PseudoMassTable(hp::HaloProfile) = PseudoMassTable(hp, nothing)
+ProfileProperties(hp::HaloProfile) = ProfileProperties(hp, nothing, nothing)
 
-function _save_pseudo_mass(pmtab::PseudoMassTable)
-    
-    @info "| Saving pseudo_mass_I in cache" 
-    β  = 10.0.^range(-7, 5, 200)
-    xt = 10.0.^range(-7, 5, 200)
+# definition of length and iterator on our struct
+# allows to use f.(x, y) where y is of type HaloProfile
+Base.length(::ProfileProperties) = 1
+Base.iterate(iter::ProfileProperties) = (iter, nothing)
+Base.iterate(::ProfileProperties, state::Nothing) = nothing
 
-    # use parallelisation as every point is independant
-    y = Array{Float64}(undef, 200, 200)
-    Threads.@threads for iβ in 1:200 
-        for ix in 1:200 
-            y[iβ, ix] = pseudo_mass_I(β[iβ], xt[ix], pmtab.hp)
-        end
-    end
-
-    hash_value = hash(pmtab.hp.name)
-    JLD2.jldsave(cache_location * "pseudo_mass_I_" * string(hash_value, base=16) * ".jld2" ; β = β, xt = xt, y = y)
-
-end
-
-function _load_pseudo_mass(pmtab::PseudoMassTable)
-    
-    hash_value = hash(pmtab.hp.name)
-
-    !(isdir(cache_location)) && mkdir(cache_location)
-    filenames  = readdir(cache_location)
-    file       = "pseudo_mass_I_" * string(hash_value, base=16) * ".jld2" 
-
-    !(file in filenames) && _save_pseudo_mass(pmtab)
-
-    data    = JLD2.jldopen(cache_location * file)
-
-    _β  = data["β"]
-    _xt = data["xt"]
-    _y  = data["y"]
-
-    log10_y = Interpolations.interpolate((log10.(_β), log10.(_xt),), log10.(_y),  Interpolations.Gridded(Interpolations.Linear()))
-
-    function return_func_pm(β::Real, xt::Real)
-
-        (β > xt) && (return 1.0) 
-        
-        if (β < _β[1]) || (β >= _β[end]) || (xt < _xt[1]) || (xt >= _xt[end])
-            return pseudo_mass_I(β, xt, pmtab.hp)
-        end
-
-        return 10.0^log10_y(log10(β), log10(xt))
-    end
-
-    return return_func_pm
-
-end
-
-# redefinition of getproperty to instantiate tables
-function Base.getproperty(obj::PseudoMassTable, s::Symbol)
-
-    # we load the data if necessary
-    if getfield(obj, s) === nothing
-        setfield!(obj, s, _load_pseudo_mass(obj))
-    end
-
-    return getfield(obj, s)
-end
-
-
-preload!(pmtab::PseudoMassTable) = _load_pseudo_mass(pmtab)
 
 
 ##################################################
@@ -197,10 +158,10 @@ with the probability distribution of `` \beta = b / r_{\rm s} `` given by
 
 The last argument, `shp` stands for subhalo profile and must be of type `HaloProfile{<:Real}``
 """
-function average_δw2_stars(x::Real, xt::Real, β_min::Real, β_max::Real, pmtab::PseudoMassTable)
+function average_δw2_stars(x::Real, xt::Real, β_min::Real, β_max::Real, pp::ProfileProperties)
     
     function _to_integrate(lnβ::Real) 
-        pmI = pmtab.pseudo_mass_I(exp(lnβ), xt)
+        pmI = pp.pseudo_mass_I(exp(lnβ), xt)
         return (pmI^2 + 3 * (1 - 2*pmI) / (3 + 2 * (x/exp(lnβ))^2))
     end
 
@@ -213,16 +174,16 @@ function average_δw2_stars(x::Real, xt::Real, β_min::Real, β_max::Real, pmtab
 end
 
 """ result in (Mpc / s)^2 """
-function average_δv2_stars(x::Real, xt::Real, β_min::Real, r_host::Real, rs::Real, host::HostModel{<:Real}, pmtab::PseudoMassTable, use_tables::Bool = true)
+function average_δv2_stars(x::Real, xt::Real, β_min::Real, r_host::Real, rs::Real, host::HostModel{<:Real}, pp::ProfileProperties, use_tables::Bool = true)
     β_max = (use_tables ? host.maximum_impact_parameter(r_host) : maximum_impact_parameter(r_host, host)) / rs
-    return average_δu2_stars(r_host, rs, host, use_tables) * average_δw2_stars(x, xt, β_min, β_max, pmtab)
+    return average_δu2_stars(r_host, rs, host, use_tables) * average_δw2_stars(x, xt, β_min, β_max, pp)
 end
 
 """ result in (Mpc / s)^2 """
-function average_energy_kick_stars(x::Real, xt::Real, β_min::Real, r_host::Real, rs::Real, host::HostModel{<:Real}, pmtab::PseudoMassTable, θ::Real = π/3, use_tables::Bool = true)
+function average_energy_kick_stars(x::Real, xt::Real, β_min::Real, r_host::Real, rs::Real, host::HostModel{<:Real}, pp::ProfileProperties, θ::Real = π/3, use_tables::Bool = true)
     n_stars = use_tables ? host.number_stellar_encounters(r_host) * 0.5 / cos(θ) : number_stellar_encounters(r_host, host, θ)
     (n_stars == 0) && (return 0) # means that we are in a region with no stars
-    return 0.5 * n_stars * average_δv2_stars(x, xt, β_min, r_host, rs, host, pmtab, use_tables)
+    return 0.5 * n_stars * average_δv2_stars(x, xt, β_min, r_host, rs, host, pp, use_tables)
 end
 
 ####################################

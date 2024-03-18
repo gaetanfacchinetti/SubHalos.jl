@@ -1,3 +1,21 @@
+##################################################################################
+# This file is part of SubHalos.jl
+#
+# Copyright (c) 2024, Gaétan Facchinetti
+#
+# SubHalos.jl is free software: you can redistribute it and/or modify it 
+# under the terms of the GNU General Public License as published by 
+# the Free Software Foundation, either version 3 of the License, or any 
+# later version. CosmoTools.jl is distributed in the hope that it will be useful, 
+# but WITHOUT ANY WARRANTY; without even the implied warranty of 
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+# See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU 
+# General Public License along with 21cmCAST. 
+# If not, see <https://www.gnu.org/licenses/>.
+##################################################################################
+
 export jacobi_scale, jacobi_scale_DM_only, tidal_scale, baryons_tidal_scale
 
 ################################################
@@ -47,7 +65,7 @@ jacobi_radius_DM_only(r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Rea
 # Total baryonic tides
 
 """ Tidal radius after one crossing of the disk in units of the scale radius """
-function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}, pmtab::PseudoMassTable, q::Real, θ::Real, disk::Bool, stars::Bool, use_tables::Bool)
+function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}, pp::ProfileProperties, q::Real, θ::Real, disk::Bool, stars::Bool, use_tables::Bool)
    
     # if no baryons effect just return x_init
     !(disk || stars) && (return x_init)
@@ -56,10 +74,10 @@ function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, 
     function _to_bisect(x::Real) 
         ΔE = 0
 
-        disk && (ΔE += angle_average_energy_shock(x * subhalo.rs, x_init * subhalo.rs, r_host, subhalo, host))
-        stars && (ΔE += 0.7 * average_energy_kick_stars(x, x_init, β_min(q, r_host, subhalo.rs, host, θ, use_tables), r_host, subhalo.rs, host, pmtab, θ, use_tables))
+        disk && (ΔE += angle_average_energy_shock(x * subhalo.rs, x_init * subhalo.rs, r_host, subhalo, host, pp))
+        stars && (ΔE += 0.7 * average_energy_kick_stars(x, x_init, β_min(q, r_host, subhalo.rs, host, θ, use_tables), r_host, subhalo.rs, host, pp, θ, use_tables))
 
-        #println("Comparison ", x, " ", ΔE / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)))
+        #println("Comparison ", x, " ", ΔE, " ", ΔE / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)))
 
         return ΔE / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)) - 1.0
     end
@@ -80,7 +98,7 @@ function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, 
             string(_to_bisect.(10.0.^range(-15, log10(x_init), 20))) * "\n" * e.msg
             throw(ArgumentError(msg))
         else
-            throw(e)
+            rethrow()
         end
     end
 
@@ -90,7 +108,7 @@ end
 
 
 """ Tidal radius after n_cross crossing of the disk in units of the scale radius """
-function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}, n_cross::Int, pmtab::PseudoMassTable, q::Real, θ::Real, disk::Bool, stars::Bool, use_tables::Bool)
+function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}, n_cross::Int, pp::ProfileProperties, q::Real, θ::Real, disk::Bool, stars::Bool, use_tables::Bool)
 
     # if no baryons effect just return x_init
     !(disk || stars) && (return x_init)
@@ -98,7 +116,7 @@ function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, 
     xt = x_init
 
     for i in 1:n_cross
-        xt = baryons_tidal_scale(xt, r_host, subhalo, host, pmtab, q, θ, disk, stars, use_tables)
+        xt = baryons_tidal_scale(xt, r_host, subhalo, host, pp, q, θ, disk, stars, use_tables)
         (xt == 0) && (return 0)
     end
 
@@ -106,11 +124,14 @@ function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, 
 end
 
 function tidal_scale(r_host::Real, subhalo::Halo{<:Real}, host::HostModel = milky_way_MM17_g1, z::Real = 0.0, Δ::Real = 200, cosmo::Cosmology = planck18; 
-    pmtab::PseudoMassTable, q::Real=0.2, θ::Real = π/3, disk::Bool = true, stars::Bool = false, use_tables::Bool = true)
+    pp::ProfileProperties, q::Real=0.2, θ::Real = π/3, disk::Bool = true, stars::Bool = false, use_tables::Bool = true)
 
     xt = min(jacobi_scale(r_host, subhalo, host), cΔ(subhalo, Δ, cosmo))
+
+    (r_host >= host.rt) && return xt
+
     n_cross = 2 * number_circular_orbits(r_host, host, z, cosmo.bkg)
-    return baryons_tidal_scale(xt, r_host, subhalo, host, n_cross, pmtab, q, θ, disk, stars, use_tables)
+    return baryons_tidal_scale(xt, r_host, subhalo, host, n_cross, pp, q, θ, disk, stars, use_tables)
 
 end
 
