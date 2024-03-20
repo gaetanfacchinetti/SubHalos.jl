@@ -16,7 +16,7 @@
 # If not, see <https://www.gnu.org/licenses/>.
 ##################################################################################
 
-export clean_cache!, make_cache!, load!
+export clean_cache!, make_cache!, load!, reset!
 
 cache_location::String = ".cache/"
 
@@ -41,22 +41,6 @@ function _save_pseudo_mass(pp::ProfileProperties)
     JLD2.jldsave(filename ; β = β, xt = xt, y = y)
 
     return true
-
-end
-
-
-get_hash(pp::ProfileProperties) = string(hash(pp.hp.name), base=16)
-
-
-function get_filename(pp::ProfileProperties, s::Symbol, str::String = "")
-    
-    (str != "") && (str = "_" * str )
-
-    !(isdir(cache_location)) && mkdir(cache_location)
-    filenames  = readdir(cache_location)
-    file       = string(s) * str *  "_" * get_hash(pp) * ".jld2" 
-
-    return cache_location * file, (file in filenames)
 
 end
 
@@ -138,6 +122,23 @@ function _load_velocity_dispersion!(pp::ProfileProperties)
 end
 
 
+###########################
+# Functions for loading
+
+get_hash(pp::ProfileProperties) = string(hash(pp.hp.name), base=16)
+
+function get_filename(pp::ProfileProperties, s::Symbol, str::String = "")
+    
+    (str != "") && (str = "_" * str )
+
+    !(isdir(cache_location)) && mkdir(cache_location)
+    filenames  = readdir(cache_location)
+    file       = string(s) * str *  "_" * get_hash(pp) * ".jld2" 
+
+    return cache_location * file, (file in filenames)
+
+end
+
 function _load!(pp::ProfileProperties, s::Symbol)
     (s === :pseudo_mass_I) && (return _load_pseudo_mass!(pp))
     (s === :velocity_dispersion) && (return _load_velocity_dispersion!(pp))
@@ -145,6 +146,7 @@ end
 
 
 # redefinition of getproperty to instantiate tables
+# automatic loading if the function is called
 function Base.getproperty(obj::ProfileProperties, s::Symbol)
 
     # we load the data if necessary
@@ -158,26 +160,34 @@ end
 
 # preload a number of functions
 function load!(pp::ProfileProperties)
+
     for field in fieldnames(ProfileProperties)
-        (getfield(pp, field) === nothing) && setfield!(pp, field, _load!(pp, field))
-    end
-end
-
-
-function clean_cache!(pp::ProfileProperties)
-
-    _to_clean = []
-    for field in fieldnames(ProfileProperties)
-        if fieldtype(ProfileProperties, field) === Union{Nothing, Function}
-            append!(_to_clean, field)
-        end
-    end
-
-    for tc in _to_clean 
-        filename, exist = get_filename(pp, tc)
-        !(exist) && (@info "No saved function " * string(tc) * " for model" * string(model))
-        (file in filenames) && rm(filename)
-        (file in filenames) && setproperty!(pp, tc, nothing) # reinitialise to nothing
+        (getfield(pp, field) === nothing) && setproperty!(pp, field, _load!(pp, field))
     end
     
+    return nothing
+end
+
+""" reset the ProfileProperties object entirely """
+reset!(pp::ProfileProperties) = begin reset!.(pp, [field for field in fieldnames(ProfileProperties)]); return nothing; end
+reset!(pp::ProfileProperties, s::Symbol) = begin ((fieldtype(ProfileProperties, s) === Union{Nothing, Function}) && setproperty!(pp, s, nothing)); return nothing; end
+
+    
+function clean_cache!(pp::ProfileProperties, s::Symbol) 
+    file, exist = get_filename(pp, s)
+    !(exist) && (@info "No saved function " * string(s) * " for ProfileProperty object" * string(pp))
+    exist && rm(file)
+    exist && setproperty!(pp, s, nothing) # reinitialise to nothing
+
+    return nothing
+end
+
+""" clean the cache data and reset the ProfileProperty object"""
+function clean_cache!(pp::ProfileProperties)
+
+    # find all fields in the struct that are of type Union{Nothing, Function} and that can be deleted as part of the cache
+    ft = [_ft for _ft in (fieldtype.(ProfileProperties, fieldnames(ProfileProperties)))]
+    clean_cache!.(pp,  [_f for _f in fieldnames(ProfileProperties)[findall(==(true), (ft .===Union{Nothing, Function}))]])
+    
+    return nothing
 end

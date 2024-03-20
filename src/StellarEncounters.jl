@@ -182,6 +182,7 @@ end
 """ result in (Mpc / s)^2 """
 function average_energy_kick_stars(x::Real, xt::Real, β_min::Real, r_host::Real, rs::Real, host::HostModel{<:Real}, pp::ProfileProperties, θ::Real = π/3, use_tables::Bool = true)
     n_stars = use_tables ? host.number_stellar_encounters(r_host) * 0.5 / cos(θ) : number_stellar_encounters(r_host, host, θ)
+    #println(β_min * rs, " ", host.maximum_impact_parameter(r_host), " ", n_stars, " ", 0)
     (n_stars == 0) && (return 0) # means that we are in a region with no stars
     return 0.5 * n_stars * average_δv2_stars(x, xt, β_min, r_host, rs, host, pp, use_tables)
 end

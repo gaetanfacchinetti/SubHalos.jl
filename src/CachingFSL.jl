@@ -16,8 +16,7 @@
 # If not, see <https://www.gnu.org/licenses/>.
 ##################################################################################
 
-export get_hash, clean_cache!, make_cache!, load!
-
+export get_hash, clean_cache!, make_cache!, load!, reset!
 
 const _NPTS_R = 50
 const _NPTS_M = 50
@@ -101,9 +100,14 @@ function _load_tidal_scale(model::FSLModel, filepath::String)
         
         return (r::Real, c::Real, m::Real = 1.0) -> 
         begin
-            res = 10.0^log10_y(log10(r), log10(c))
-            (res === NaN) && return -Inf
-            return res 
+            try
+                res = 10.0^log10_y(log10(r), log10(c))
+                (res === NaN) && return -Inf
+                return res 
+            catch e
+                isa(e, BoundsError) && (return tidal_scale(r, c, m, model))
+                rethrow()
+            end 
         end
 
     else
@@ -111,9 +115,14 @@ function _load_tidal_scale(model::FSLModel, filepath::String)
         
         return (r::Real, c::Real, m::Real) -> 
         begin
-            res = 10.0^log10_y(log10(r), log10(c), log10(m))
-            (res === NaN) && return -Inf
-            return res 
+            try
+                res = 10.0^log10_y(log10(r), log10(c), log10(m))
+                (res === NaN) && return -Inf
+                return res 
+            catch e
+                isa(e, BoundsError) && (return tidal_scale(r, c, m, model))
+                rethrow()
+            end
         end
     end
 
@@ -137,10 +146,6 @@ function clean_cache!(model::FSLModel, clean_tidal_scale::Bool = false)
     end
     
 end
-
-
-load!(model::FSLModel) = _load!.(model, [:tidal_scale, :min_concentration, :min_concentration_calibration, :min_concentration_mt])
-make_cache!(model::FSLModel) = make_cache!.(model, [:tidal_scale, :min_concentration, :min_concentration_calibration, :min_concentration_mt])
 
 
 ##################################################################################
@@ -213,3 +218,30 @@ function _load!(model::FSLModel, s::Symbol)
     end
 
 end
+
+
+function load!(model::FSLModel)
+    
+    for field in fieldnames(FSLModel) 
+        (getfield(model, field) === nothing) && setproperty!(model, field, _load!(model, field))
+    end
+
+    return nothing
+end
+
+
+""" make the cache functions / compare to load, even if cache already exist, remake it """
+function make_cache!(model::FSLModel)
+
+    ft = [_ft for _ft in (fieldtype.(FSLModel, fieldnames(FSLModel)))]
+    make_cache!.(model,  [_f for _f in fieldnames(FSLModel)[findall(==(true), (ft .===Union{Nothing, Function}))]])
+
+    return nothing
+end
+
+
+
+""" reset the FSLModel object entirely """
+reset!(model::FSLModel) = begin reset!.(model, [field for field in fieldnames(FSLModel)]); return nothing; end
+reset!(model::FSLModel, s::Symbol) = begin ((fieldtype(FSLModel, s) === Union{Nothing, Function}) && setproperty!(model, s, nothing)); return nothing; end
+

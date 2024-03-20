@@ -74,9 +74,10 @@ function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, 
     function _to_bisect(x::Real) 
         ΔE = 0
 
-        disk && (ΔE += angle_average_energy_shock(x * subhalo.rs, x_init * subhalo.rs, r_host, subhalo, host, pp))
+        disk && (ΔE += angle_average_energy_shock(x * subhalo.rs, x_init * subhalo.rs, r_host, subhalo, host))
         stars && (ΔE += 0.7 * average_energy_kick_stars(x, x_init, β_min(q, r_host, subhalo.rs, host, θ, use_tables), r_host, subhalo.rs, host, pp, θ, use_tables))
 
+        #println("q = ", q, " β_min = ", β_min(q, r_host, subhalo.rs, host, θ, use_tables))
         #println("Comparison ", x, " ", ΔE, " ", ΔE / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)))
 
         return ΔE / abs(gravitational_potential(x * subhalo.rs, x_init * subhalo.rs, subhalo)) - 1.0
@@ -117,7 +118,8 @@ function baryons_tidal_scale(x_init::Real, r_host::Real, subhalo::Halo{<:Real}, 
 
     for i in 1:n_cross
         xt = baryons_tidal_scale(xt, r_host, subhalo, host, pp, q, θ, disk, stars, use_tables)
-        (xt == 0) && (return 0)
+        (xt <= 2e-15) && (return 0)
+
     end
 
     return xt
@@ -125,6 +127,9 @@ end
 
 function tidal_scale(r_host::Real, subhalo::Halo{<:Real}, host::HostModel = milky_way_MM17_g1, z::Real = 0.0, Δ::Real = 200, cosmo::Cosmology = planck18; 
     pp::ProfileProperties, q::Real=0.2, θ::Real = π/3, disk::Bool = true, stars::Bool = false, use_tables::Bool = true)
+
+
+    #println("q = ", q)
 
     xt = min(jacobi_scale(r_host, subhalo, host), cΔ(subhalo, Δ, cosmo))
 

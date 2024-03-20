@@ -29,7 +29,7 @@ end
 """ inverse function giving mΔ in terms of the tidal mass"""
 function mΔ_from_mt(mt::Real, cΔ::Real, r_host::Real, model::FSLModel) 
 
-    m_min = 1e-16
+    m_min = 1e-15
     m_max = model.context.m200_host
 
     res = -1.0
@@ -61,7 +61,7 @@ function xt_from_mt(mt::Real, mΔ::Real, cΔ::Real, hp::HaloProfile)
         throw(ArgumentError("The tidal mass must be less than the virial mass : mt = " * string(mt) * " Msun, mΔ = " * string(mΔ) * " Msun"))
     end
 
-    xt_min = 1e-15
+    xt_min = 2e-15
     xt_max = cΔ
 
     res = -1.0
