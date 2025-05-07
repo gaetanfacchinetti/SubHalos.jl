@@ -182,12 +182,13 @@ function get_hash(model::FSLModel, s::Symbol)
 
     if (s === :tidal_scale)
         hash_tuple = (model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.options.c_max, model.params.z, model.options.disk, model.options.stars)
-        (model.options.stars) && (hash_tuple = (hash_tuple..., (model.context.q, model.context.θ)...))
     elseif (s === :min_concentration_calibration)
         hash_tuple = (model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.options.c_max, model.params.z)
     else
         hash_tuple = (model.context.host.name, model.context.cosmo.name, model.context.subhalo_profile.name, model.params.ϵ_t, model.options.c_max, model.params.z, model.options.disk, model.options.stars)
     end
+
+    (model.options.stars) && (hash_tuple = (hash_tuple..., (model.context.q, model.context.θ)...))
 
     return string(hash(hash_tuple), base=16)
 end 
