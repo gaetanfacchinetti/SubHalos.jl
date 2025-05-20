@@ -86,7 +86,7 @@ end
 function PseudoMass(hp::HaloProfile{S}, ::Type{T}=Float64) where {T<:AbstractFloat, S<:Real}
     
     filename, exist = get_filename(hp, :pseudo_mass_I)
-    !exist && _save_pseudo_mass(pp)
+    !exist && _save_pseudo_mass(hp)
 
     log10_y, log10_β, log10_xt = let
         JLD2.jldopen(filename, "r") do file

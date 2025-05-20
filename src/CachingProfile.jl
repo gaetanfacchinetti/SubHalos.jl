@@ -20,10 +20,10 @@ export clean_cache!, make_cache!, load!, reset!
 
 cache_location::String = ".cache/"
 
-function _save_pseudo_mass(pp::ProfileProperties)
+function _save_pseudo_mass(hp::HaloProfile)
     
     # Check if the file already exists
-    filename, exist = get_filename(pp, :pseudo_mass_I)
+    filename, exist = get_filename(hp, :pseudo_mass_I)
     (exist) && return true
 
     @info "| Saving pseudo_mass_I in cache" 
@@ -34,7 +34,7 @@ function _save_pseudo_mass(pp::ProfileProperties)
     y = Array{Float64}(undef, 200, 200)
     Threads.@threads for iβ in 1:200 
         for ix in 1:200 
-            y[iβ, ix] = pseudo_mass_I(β[iβ], xt[ix], pp.hp)
+            y[iβ, ix] = pseudo_mass_I(β[iβ], xt[ix], hp)
         end
     end
 

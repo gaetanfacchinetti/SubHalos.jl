@@ -21,6 +21,12 @@ export jacobi_scale, jacobi_scale_DM_only, tidal_scale, baryons_tidal_scale
 ################################################
 ## Jacobi Radius
 
+#struct BissectionJacobiTS
+#    r_host::T
+#    ρs::T
+#end
+
+
 @doc raw"""
     jacobi_scale(r, ρs, hp, ρ_host, m_host)
 
