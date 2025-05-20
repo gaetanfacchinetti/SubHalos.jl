@@ -25,9 +25,9 @@ export mass_fraction, normalisation_factor, number_subhalos, unevolved_number_su
 export pdf_virial_mass, pdf_position, pdf_rmc_FSL, pdf_rm_FSL, pdf_r_FSL, pdf_m_FSL, density_rmc_FSL, density_rm_FSL, density_r_FSL, density_m_FSL
 export test_FSL_1, test_FSL_2, test_FSL_3, get_hash_tidal_scale
 
-abstract type FSLParams{T<:Real} end
+abstract type FSLParams{T<:AbstractFloat} end
 
-struct FSLParamsPL{T<:Real} <: FSLParams{T}
+struct FSLParamsPL{T<:AbstractFloat} <: FSLParams{T}
     
     # basic parameters of the model
     α_m::T
@@ -43,7 +43,7 @@ struct FSLParamsPL{T<:Real} <: FSLParams{T}
     z::T
 end
 
-struct FSLParamsMT{T<:Real} <: FSLParams{T}
+struct FSLParamsMT{T<:AbstractFloat} <: FSLParams{T}
     
     # basic parameters of the model
     γ_1::T
@@ -65,45 +65,69 @@ Base.length(::FSLParams) = 1
 Base.iterate(iter::FSLParams) = (iter, nothing)
 Base.iterate(::FSLParams, state::Nothing) = nothing
 
-FSLParamsPL(α_m::Real, ϵ_t::Real, m_min::Real, mass_frac::Real = 0.11, x1_frac::Real = 2.2e-6, x2_frac::Real = 8.8e-4, z::Real = 0.0) = FSLParamsPL(promote(α_m, ϵ_t, m_min, mass_frac, x1_frac, x2_frac, z)...)
-FSLParamsMT(γ_1::Real, α_1::Real, γ_2::Real, α_2::Real, β::Real, ζ::Real, ϵ_t::Real, m_min::Real, z::Real = 0.0) = FSLParamsMT(promote(γ_1, α_1, γ_2, α_2, β, ζ, ϵ_t, m_min, z)...)
+FSLParamsPL(α_m::T, ϵ_t::T, m_min::T) where {T<:AbstractFloat} = FSLParamsPL(α_m, ϵ_t, m_min, T(0.11), T(2.2e-6), T(8.8e-4), T(0.0))
+FSLParamsMT(γ_1::T, α_1::T, γ_2::T, α_2::T, β::T, ζ::T, ϵ_t::T, m_min::T) where {T<:AbstractFloat} = FSLParamsMT(γ_1, α_1, γ_2, α_2, β, ζ, ϵ_t, m_min, T(0.0))
 
-struct FSLContext{T<:Real}
+
+struct FSLContext{
+    T<:AbstractFloat, 
+    C<:Cosmology, 
+    HM<:HostModel, 
+    HP<:HaloProfile,
+    PP<:ProfileProperties
+    }
     
-    cosmo::Cosmology{T}
-    host::HostModel{T}
-    subhalo_profile::HaloProfile{<:Real}
+    cosmo::C
+    host::HM
+    subhalo_profile::HP
     
     θ::T # angle between the subhalo's trajectory and the disk
     q::T # fraction of crossing with an impact parameter b > b_0(q)
     
     # Precomputed values
-    m200_host::T               # defined from the HostHalo
-    pp::ProfileProperties      # defined from the HaloProfile
+    m200_host::T  # defined from the HostHalo
+    pp::PP        # defined from the HaloProfile
 end
 
 
-function FSLContext(cosmo::Cosmology{<:Real} = planck18, host::HostModel{<:Real} = milky_way_MM17_g1, sp::HaloProfile{<:Real} = nfwProfile; θ::Real=π/3, q::Real = 0.2) 
-    pp = ProfileProperties(sp)
-    return FSLContext(cosmo, host, sp, θ, q, mΔ(host.halo, 200, cosmo), pp)
+function FSLContext(
+    cosmo::Cosmology = planck18, 
+    host::HostModel = milky_way_MM17_g1, 
+    sp::HaloProfile = nfwProfile; 
+    θ::AbstractFloat = π/3,
+    q::AbstractFloat = 0.2)
+
+    T, BKG = get_cosmology_type(cosmo)
+    THM, U = get_host_halo_type(host)
+    S      = get_halo_profile_type(sp)
+    
+    @assert THM === T
+
+    pp = ProfileProperties(sp, T)
+    return FSLContext{T, Cosmology{T, BKG}, HostModel{T, U}, typeof(sp), ProfileProperties{T, S}}(cosmo, host, sp, θ, q, mΔ(host.halo, 200, cosmo), pp)
 end
+
+get_context_type(::FSLContext{T, C, HM, HP, PP}) where {T<:AbstractFloat, C<:Cosmology, HM<:HostModel, HP<:HaloProfile, PP<:ProfileProperties} = T, C, HM, HP, PP
 
 # options to run the code
-struct FSLOptions
+struct FSLOptions{T<:AbstractFloat}
     disk::Bool
     stars::Bool
     mc_model::Symbol
     use_tables::Bool
-    c_max::Real
+    c_max::T
 end
 
-FSLOptions(disk::Bool = true, stars::Bool = false, mc_model::Symbol = :SC12, use_tables::Bool = true) = FSLOptions(disk, stars, mc_model, use_tables, 500.0)
+FSLOptions(disk::Bool = true, stars::Bool = false, mc_model::Symbol = :SC12, use_tables::Bool = true, ::Type{T} = Float64) where {T<:AbstractFloat} = FSLOptions(disk, stars, mc_model, use_tables, T(500.0))
 
-mutable struct FSLModel{T<:Real}
+mutable struct FSLModel{ 
+    P<:FSLParams, 
+    Q<:FSLContext, 
+    O<:FSLOptions}
 
-    const params::FSLParams{T}
-    const context::FSLContext{T}
-    const options::FSLOptions
+    const params::P
+    const context::Q
+    const options::O
 
     tidal_scale::Union{Nothing, Function}
     min_concentration::Union{Nothing, Function}
@@ -111,7 +135,9 @@ mutable struct FSLModel{T<:Real}
     min_concentration_calibration::Union{Nothing, Function}
 end
 
-FSLModel(params::FSLParams{<:Real}, context::FSLContext{<:Real}, options::FSLOptions) = FSLModel(params, context, options, nothing, nothing, nothing, nothing)
+@inline function FSLModel(params::P, context::Q, options::O) where {P<:FSLParams,  Q<:FSLContext, O<:FSLOptions} 
+    return FSLModel{P, Q, O}(params, context, options, nothing, nothing, nothing, nothing)
+end 
 
 # definition of length and iterator on our struct
 # allows to use f.(x, y) where y is of type FSLModel
@@ -123,18 +149,18 @@ Base.iterate(::FSLModel, state::Nothing) = nothing
 # definition of a constant model
 const dflt_FSLOptions::FSLOptions   = FSLOptions(true, false, :SCP12, true, 500.0)
 const dflt_FSLContext::FSLContext   = FSLContext(planck18, milky_way_MM17_g1, nfwProfile)
-const dflt_FSLParamsPL::FSLParamsPL = FSLParamsPL(1.95, 1e-2, 1e-6, 0.0)
-const dflt_FSLParamsMT::FSLParamsMT = FSLParamsMT(0.019, 1.94, 0.464, 1.58, 24.0, 3.4, 1e-2, 1e-6, 0.0)
+const dflt_FSLParamsPL::FSLParamsPL = FSLParamsPL(1.95, 1e-2, 1e-6)
+const dflt_FSLParamsMT::FSLParamsMT = FSLParamsMT(0.019, 1.94, 0.464, 1.58, 24.0, 3.4, 1e-2, 1e-6)
 
 dflt_FSLModel::FSLModel = FSLModel(dflt_FSLParamsPL, dflt_FSLContext, dflt_FSLOptions)
 
 
 """ tidal scale in terms of the parameters of the model, r_host, c200 and m200 """
-tidal_scale(r_host::Real, c200::Real, m200::Real, model::FSLModel{<:Real}) = tidal_scale(r_host, 
-        halo_from_mΔ_and_cΔ(model.context.subhalo_profile, m200, c200, Δ=200.0, ρ_ref = model.context.cosmo.bkg.ρ_c0), 
-        model.context.host, model.params.z, 200, model.context.cosmo,  pp = model.context.pp,
+function tidal_scale(r_host::T, c200::T, m200::T, model::FSLModel) where {T<:AbstractFloat}
+    return tidal_scale(r_host, halo_from_mΔ_and_cΔ(model.context.subhalo_profile, m200, c200, Δ=T(200.0), ρ_ref = model.context.cosmo.bkg.ρ_c0), 
+        model.context.host, model.params.z, T(200.0), model.context.cosmo,  pp = model.context.pp,
         q = model.context.q, θ = model.context.θ, disk = model.options.disk, stars = model.options.stars, use_tables = model.options.use_tables) 
-
+end 
 
 """ minimal concentration of surviving halos at position r_host (Mpc) with mass m200 (Msun) """
 function min_concentration(r_host::Real, m200::Real, model::FSLModel{<:Real} = dflt_FSLModel)

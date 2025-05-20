@@ -59,13 +59,62 @@ end
 pseudo_mass_I(b::Real, rt::Real, sh::Halo) = pseudo_mass_I(b/sh.rs, rt/sh.rs, sh.hp)
 
 
-mutable struct ProfileProperties
-    const hp::HaloProfile{<:Real}
-    pseudo_mass_I::Union{Nothing, Function}
+const Interpolator{T} = Interpolations.GriddedInterpolation{T, 2, Matrix{T}, Interpolations.Gridded{Interpolations.Linear{Interpolations.Throw{Interpolations.OnGrid}}}, Tuple{Vector{T}, Vector{T}}}
+
+struct PseudoMass{T<:AbstractFloat, S<:Real}
+    interp::Interpolator{T}
+    log10_βmin::T
+    log10_βmax::T
+    log10_xtmin::T
+    log10_xtmax::T
+    hp::HaloProfile{S}
+end
+
+function get_filename(hp::HaloProfile{T}, s::Symbol, str::String = "") where {T<:Real}
+    
+    (str != "") && (str = "_" * str )
+
+    !(isdir(cache_location)) && mkdir(cache_location)
+    filenames  = readdir(cache_location)
+    file       = string(s) * str *  "_" * get_hash(hp) * ".jld2" 
+
+    return cache_location * file, (file in filenames)
+
+end
+
+# Constructor for MyPseudoMass
+function PseudoMass(hp::HaloProfile{S}, ::Type{T}=Float64) where {T<:AbstractFloat, S<:Real}
+    
+    filename, exist = get_filename(hp, :pseudo_mass_I)
+    !exist && _save_pseudo_mass(pp)
+
+    log10_y, log10_β, log10_xt = let
+        JLD2.jldopen(filename, "r") do file
+            T.(log10.(file["y"])), 
+            T.(log10.(file["β"])), 
+            T.(log10.(file["xt"]))
+        end
+    end
+
+    interp = Interpolations.interpolate((log10_β, log10_xt), log10_y, Interpolations.Gridded(Interpolations.Linear()))
+    
+    log10_βmin, log10_βmax = extrema(log10_β)
+    log10_xtmin, log10_xtmax = extrema(log10_xt)
+
+    return PseudoMass{T, S}(interp, log10_βmin, log10_βmax, log10_xtmin, log10_xtmax, hp)
+end
+
+
+mutable struct ProfileProperties{T<:AbstractFloat, S<:Real}
+    hp::HaloProfile{S}
+    pm::PseudoMass{T}
     velocity_dispersion::Union{Nothing, Function}
 end
 
-ProfileProperties(hp::HaloProfile) = ProfileProperties(hp, nothing, nothing)
+function ProfileProperties(hp::HaloProfile{S}, ::Type{T}=Float64) where {T<:AbstractFloat, S<:Real} 
+    pm = PseudoMass(hp, T)
+    return ProfileProperties(hp, pm, nothing)
+end
 
 # definition of length and iterator on our struct
 # allows to use f.(x, y) where y is of type HaloProfile
@@ -144,6 +193,60 @@ average_δu2_stars(r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real},
 average_δu2_stars_kms(r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real}, use_tables::Bool = true) = average_δu2_stars(r_host, subhalo, host, use_tables) * MPC_TO_KM
 
 
+# Fast 10^x using cached log(10)
+const LOG10_64::Float64 = log(Float64(10.0))
+const LOG10_32::Float32 = log(Float32(10.0))
+const LOG10_16::Float16 = log(Float16(10.0))
+
+@inline exp10_fast(x::Float64) = exp(LOG10_64 * x)
+@inline exp10_fast(x::Float32) = exp(LOG10_32 * x)
+@inline exp10_fast(x::Float16) = exp(LOG10_16 * x)
+
+# Main functor method
+@inline function (f::PseudoMass{T})(log10_β::T, log10_xt::T)::T where {T<:AbstractFloat}
+    if log10_β > log10_xt
+        return one(T)
+    elseif log10_β < f.log10_βmin || log10_β > f.log10_βmax || log10_xt < f.log10_xtmin || log10_xt > f.log10_xtmax
+        return convert(T, pseudo_mass_I(exp10_fast(log10_β), exp10_fast(log10_xt), f.hp))
+    else
+        return exp10_fast(f.interp(log10_β, log10_xt))
+    end
+end
+
+# Integrand functor (avoid abusive memory usage)
+struct Averageδw2Integrand{T<:AbstractFloat}
+    x::T
+    log10_xt::T
+    psm::PseudoMass{T}
+end
+
+@inline function (f::Averageδw2Integrand{T})(log10_β::T)::T where {T<:AbstractFloat}
+    βinv2 = inv(exp10_fast(2 * log10_β))
+    pmI = f.psm(log10_β, f.log10_xt)
+    return pmI*pmI + T(3) * (T(1) - T(2) * pmI) / (T(3) + T(2) * f.x * f.x * βinv2) * log(T(10))
+end
+
+
+# Compute average δw² for stars
+function average_δw2_stars(x::T, xt::T, β_min::T, β_max::T, pp::ProfileProperties{T, S})::T where {T<:AbstractFloat, S<:Real}
+        
+    res = zero(T)
+    f = Averageδw2Integrand{T}(x, log10(xt), pp.pm)
+
+    if β_max >= xt
+        res += T(0.5) * log(β_max * β_max / (T(3) * β_max * β_max + T(2) * x*x) * (T(3) + T(2) * x*x / max(xt, β_min)^2))
+    end
+    
+    if β_min < xt
+        res += QuadGK.quadgk(f, log10(β_min), log10(min(xt, β_max)); rtol=1e-3)[1]
+    end
+
+    return T(2) / (β_max^2 - β_min^2) * res
+end
+
+
+
+
 @doc raw""" 
     
     average_δw2_stars(x, xt, β_min, β_max, shp)
@@ -158,7 +261,7 @@ with the probability distribution of `` \beta = b / r_{\rm s} `` given by
 
 The last argument, `shp` stands for subhalo profile and must be of type `HaloProfile{<:Real}``
 """
-function average_δw2_stars(x::Real, xt::Real, β_min::Real, β_max::Real, pp::ProfileProperties)
+function my_average_δw2_stars(x::Real, xt::Real, β_min::Real, β_max::Real, pp::ProfileProperties)
     
     function _to_integrate(lnβ::Real) 
         pmI = pp.pseudo_mass_I(exp(lnβ), xt)
@@ -176,13 +279,13 @@ end
 """ result in (Mpc / s)^2 """
 function average_δv2_stars(x::Real, xt::Real, β_min::Real, r_host::Real, rs::Real, host::HostModel{<:Real}, pp::ProfileProperties, use_tables::Bool = true)
     β_max = (use_tables ? host.maximum_impact_parameter(r_host) : maximum_impact_parameter(r_host, host)) / rs
+    (β_max <= β_min) && return 0.0 # can happen using interpolation tables if the precision is not high enough
     return average_δu2_stars(r_host, rs, host, use_tables) * average_δw2_stars(x, xt, β_min, β_max, pp)
 end
 
 """ result in (Mpc / s)^2 """
 function average_energy_kick_stars(x::Real, xt::Real, β_min::Real, r_host::Real, rs::Real, host::HostModel{<:Real}, pp::ProfileProperties, θ::Real = π/3, use_tables::Bool = true)
     n_stars = use_tables ? host.number_stellar_encounters(r_host) * 0.5 / cos(θ) : number_stellar_encounters(r_host, host, θ)
-    #println(β_min * rs, " ", host.maximum_impact_parameter(r_host), " ", n_stars, " ", 0)
     (n_stars == 0) && (return 0) # means that we are in a region with no stars
     return 0.5 * n_stars * average_δv2_stars(x, xt, β_min, r_host, rs, host, pp, use_tables)
 end

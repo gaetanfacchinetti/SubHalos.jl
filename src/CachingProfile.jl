@@ -73,6 +73,7 @@ function _load_pseudo_mass!(pp::ProfileProperties)
 end
 
 
+
 function _save_velocity_dispersion(pp::ProfileProperties)
 
     filename, exist = get_filename(pp, :velocity_dispersion)
@@ -126,6 +127,7 @@ end
 # Functions for loading
 
 get_hash(pp::ProfileProperties) = string(hash(pp.hp.name), base=16)
+get_hash(hp::HaloProfile) = string(hash(hp.name), base=16)
 
 function get_filename(pp::ProfileProperties, s::Symbol, str::String = "")
     
