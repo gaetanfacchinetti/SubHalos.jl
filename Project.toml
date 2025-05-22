@@ -5,14 +5,20 @@ version = "1.0.0-DEV"
 
 [deps]
 CosmoTools = "fab82211-602b-461d-8fab-2b676713216d"
+Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
 HostHalos = "9758ad2b-40e1-4c0d-bfef-dec73165ab59"
 Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca59"
 JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
+Optimisers = "3bd65402-5787-11e9-1adc-39752487f4e2"
 QuadGK = "1fd47b50-473d-5c70-9696-f719f8f3bcdc"
 Roots = "f2b01f46-fcfa-551c-844a-d8ac1e96c665"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 
 [compat]
+Flux = "0.16.3"
+Optimisers = "0.4.6"
+Statistics = "1.11.1"
 julia = "1"
 
 [extras]

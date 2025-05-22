@@ -231,13 +231,13 @@ end
 function average_δw2_stars(x::T, xt::T, β_min::T, β_max::T, pp::ProfileProperties{T, S})::T where {T<:AbstractFloat, S<:Real}
         
     res = zero(T)
-    f = Averageδw2Integrand{T}(x, log10(xt), pp.pm)
 
     if β_max >= xt
         res += T(0.5) * log(β_max * β_max / (T(3) * β_max * β_max + T(2) * x*x) * (T(3) + T(2) * x*x / max(xt, β_min)^2))
     end
     
     if β_min < xt
+        f = Averageδw2Integrand{T}(x, log10(xt), pp.pm)
         res += QuadGK.quadgk(f, log10(β_min), log10(min(xt, β_max)); rtol=1e-3)[1]
     end
 

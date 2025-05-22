@@ -6,7 +6,7 @@
 # SubHalos.jl is free software: you can redistribute it and/or modify it 
 # under the terms of the GNU General Public License as published by 
 # the Free Software Foundation, either version 3 of the License, or any 
-# later version. CosmoTools.jl is distributed in the hope that it will be useful, 
+# later version. SubHalos.jl is distributed in the hope that it will be useful, 
 # but WITHOUT ANY WARRANTY; without even the implied warranty of 
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
 # See the GNU General Public License for more details.
@@ -40,7 +40,15 @@ end
 """ Energy gained by particle mass in a single crossing of th disk (in Mpc / s)^2 """
 function angle_average_energy_shock(r_sub::Real, rt_sub::Real, r_host::Real, subhalo::Halo{<:Real}, host::HostModel{<:Real},)
     vz =  sqrt(2.0 / π) * host.velocity_dispersion_spherical_kms(r_host) * KM_TO_MPC # in Mpc / s
-    (vz == 0) && (return Inf)
+    
+    if vz == 0
+        # first we need to make sure the problem is not comming from interpolations
+        # around the edges of the host (in which case, there is no baryons anymore
+        # and we can simply return 0.0
+        (r_host >= 0.98 * host.rt) && (return 0.0)
+        return Inf
+    end
+
     disc_acceleration = 2.0 * π * G_NEWTON * host.σ_baryons(r_host) # in Mpc / s^2
     return 2 * (disc_acceleration * r_sub / vz )^2 * adiabatic_correction(r_sub, rt_sub, r_host, subhalo, host) / 3.0;
 end

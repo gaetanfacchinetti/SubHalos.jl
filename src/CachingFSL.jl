@@ -6,7 +6,7 @@
 # SubHalos.jl is free software: you can redistribute it and/or modify it 
 # under the terms of the GNU General Public License as published by 
 # the Free Software Foundation, either version 3 of the License, or any 
-# later version. CosmoTools.jl is distributed in the hope that it will be useful, 
+# later version. SubHalos.jl is distributed in the hope that it will be useful, 
 # but WITHOUT ANY WARRANTY; without even the implied warranty of 
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
 # See the GNU General Public License for more details.
@@ -129,6 +129,7 @@ function _load_tidal_scale(model::FSLModel, filepath::String)
 end
 
 
+
 function clean_cache!(model::FSLModel, clean_tidal_scale::Bool = false)
 
     !(isdir(cache_location)) && mkdir(cache_location)
@@ -176,6 +177,8 @@ function make_cache!(model::FSLModel, s::Symbol)
     return true
 
 end
+
+
 
 """ create a unique hash combination in terms of the parameters the cached function (passed as symbol s) depends on """
 function get_hash(model::FSLModel, s::Symbol)

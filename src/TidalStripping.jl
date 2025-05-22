@@ -6,7 +6,7 @@
 # SubHalos.jl is free software: you can redistribute it and/or modify it 
 # under the terms of the GNU General Public License as published by 
 # the Free Software Foundation, either version 3 of the License, or any 
-# later version. CosmoTools.jl is distributed in the hope that it will be useful, 
+# later version. SubHalos.jl is distributed in the hope that it will be useful, 
 # but WITHOUT ANY WARRANTY; without even the implied warranty of 
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
 # See the GNU General Public License for more details.
@@ -119,17 +119,18 @@ function baryons_tidal_scale(
     res = T(-1.0) 
     
     try
-        res = exp(Roots.find_zero(f, (log(T(1e-15)), log(T(x_init))), Roots.Bisection(), xrtol = T(1e-6)))
+        res = exp(Roots.find_zero(f, (log(T(1e-15)), log(T(x_init))), Roots.Bisection(), xrtol = T(1e-8)))
     catch e
         if isa(e, ArgumentError)
             
             # if even at the smallest value the energy kick is above the potential then put xt = 0
             (f(T(1e-15)) >= zero(T)) && (return zero(T))
+            (T(r_host) > T(0.98*host.rt)) && (return x_init)
 
             msg = "Impossible to compute the baryons_tidal scale for (x_init, r_host, q, θ, disk, stars, use_tables) = (" * 
             string(x_init) * ", " * string(r_host) * ", " * string(q) * ", " * string(θ) * ", " * string(disk) * ", " * 
             string(stars) * ", " * string(use_tables) * ")\n" * string(subhalo) * "\n [vals] = " *
-            string(_to_bisect.(10.0.^range(-15, log10(x_init), 20))) * "\n" * e.msg
+            string(f.(10.0.^range(-15, log10(x_init), 20))) * "\n" * e.msg
             throw(ArgumentError(msg))
         else
             rethrow()
