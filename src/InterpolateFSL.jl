@@ -16,7 +16,7 @@
 # If not, see <https://www.gnu.org/licenses/>.
 ##################################################################################
 
-export TidalScaleInterpolator, make_nn_data, read_nn_data, forward, train!
+export TidalScaleNNInterpolator, make_nn_data, read_nn_data, forward, train!
 
 struct MetaDataInterpolator
     hash::String
@@ -42,7 +42,7 @@ end
 
 abstract type NNInterpolator{C<:Flux.Chain} end
 
-struct TidalScaleInterpolator{C<:Flux.Chain} <: NNInterpolator{C}
+struct TidalScaleNNInterpolator{C<:Flux.Chain} <: NNInterpolator{C}
     nn::C
     n_hidden_layers::Int
     n_hidden_features::Int
@@ -51,7 +51,7 @@ struct TidalScaleInterpolator{C<:Flux.Chain} <: NNInterpolator{C}
     metadata::MetaDataInterpolator
 end
 
-function TidalScaleInterpolator(
+function TidalScaleNNInterpolator(
     metadata::MetaDataInterpolator, 
     n_hidden_layers::Int = 2, 
     n_hidden_features::Int = 64, 
@@ -65,7 +65,7 @@ function TidalScaleInterpolator(
     )
 
     chain = Flux.Chain(vcat(layers...)...)
-    return TidalScaleInterpolator{typeof(chain)}(chain, n_hidden_layers, n_hidden_features,  train_loss, valid_loss, metadata)
+    return TidalScaleNNInterpolator{typeof(chain)}(chain, n_hidden_layers, n_hidden_features,  train_loss, valid_loss, metadata)
 
 end
 
@@ -74,16 +74,16 @@ normalize_input(θ::Union{Matrix{Float32}, Vector{Float32}}, θ_min::Vector{Floa
 
 
 # predictions of the model / forward pass
-function (f::TidalScaleInterpolator)(r_host::T, c::T, m::T, θ::T, q::T) where {T<:AbstractFloat}
+function (f::TidalScaleNNInterpolator)(r_host::T, c::T, m::T, θ::T, q::T) where {T<:AbstractFloat}
     x = Float32[log10(r_host), log10(c), log10(m), θ, log10(q)]
     return T(exp10(max.(f.nn(normalize_input(x, f.metadata.θ_min, f.metadata.θ_max))[1], -15f0)))
 end
 
-forward(x::Matrix{Float32}, nn::Flux.Chain, ::Type{T}) where {T<:TidalScaleInterpolator} = max.(nn(x), -15f0)
+forward(x::Matrix{Float32}, nn::Flux.Chain, ::Type{T}) where {T<:TidalScaleNNInterpolator} = max.(nn(x), -15f0)
 forward(x::Matrix{Float32}, model::T) where {T<:NNInterpolator} = forward(x, model.nn, T)
 
 # loss function
-loss(y_pred::Vector{Float32}, y_true::Vector{Float32}, ::Type{T}) where {T<:TidalScaleInterpolator} = Statistics.mean(abs.( y_pred .- y_true ) )
+loss(y_pred::Vector{Float32}, y_true::Vector{Float32}, ::Type{T}) where {T<:TidalScaleNNInterpolator} = Statistics.mean(abs.( y_pred .- y_true ) )
 
 
 function read_nn_data(
@@ -125,7 +125,7 @@ function read_nn_data(
 end 
 
 function train!(
-    model::TidalScaleInterpolator,
+    model::TidalScaleNNInterpolator,
     data::DataInterpolator, 
     optimiser::Any; 
     epochs::Int=100,
@@ -170,7 +170,7 @@ function train!(
 
 end
 
-function save(model::TidalScaleInterpolator)
+function save(model::TidalScaleNNInterpolator)
     
     model_state = Flux.state(model.nn)
 
@@ -219,7 +219,7 @@ function load_tidal_scale_interpolator(
         valid_loss = data["valid_loss"]
 
         metadata = MetaDataInterpolator(hash_str, θ_min, θ_max)
-        model    = TidalScaleInterpolator(metadata, n_hidden_layers, n_hidden_features, train_loss, valid_loss)
+        model    = TidalScaleNNInterpolator(metadata, n_hidden_layers, n_hidden_features, train_loss, valid_loss)
 
         Flux.loadmodel!(model.nn, model_state)
     end

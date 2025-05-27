@@ -22,8 +22,8 @@ import QuadGK, Roots, JLD2,  Interpolations, SpecialFunctions, Flux, Optimisers,
 
 import CosmoTools: median_concentration, SCP12, MassConcentrationModel, gravitational_potential, Cosmology, BkgCosmology
 import CosmoTools: planck18, MPC_TO_KM, orbital_frequency, G_NEWTON, KM_TO_MPC, HaloProfile, αβγProfile, plummerProfile
-import CosmoTools: Halo, μ_halo, nfwProfile, halo_from_mΔ_and_cΔ, cΔ, cΔ_from_ρs,  ρ_halo, mΔ, m_halo, circular_velocity, velocity_dispersion
-import HostHalos: HostModel, number_circular_orbits, milky_way_MM17_g1, number_circular_orbits, load!, σ_stars, ρ_stars 
+import CosmoTools: Halo, μ_halo, nfwProfile, halo_from_mΔ_and_cΔ, cΔ, cΔ_from_ρs,  ρ_halo, mΔ, m_halo, circular_velocity, velocity_dispersion, velocity_dispersion_kms
+import HostHalos: HostModel, number_circular_orbits, milky_way_MM17_g1, number_circular_orbits, load!, σ_stars, ρ_stars, stellar_mass_function
 import HostHalos: maximum_impact_parameter, number_stellar_encounters, moments_stellar_mass, velocity_dispersion_spherical_kms, circular_velocity_kms
 
 
@@ -38,6 +38,7 @@ include("./InterpolateFSL.jl")
 include("./FSL.jl")
 include("./CachingFSL.jl")
 include("./TidalMass.jl")
+include("./MonteCarlo.jl")
 
 
 end

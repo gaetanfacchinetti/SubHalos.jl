@@ -16,7 +16,7 @@
 # If not, see <https://www.gnu.org/licenses/>.
 ##################################################################################
 
-export jacobi_scale, jacobi_scale_DM_only, tidal_scale, baryons_tidal_scale
+export jacobi_scale, jacobi_radius,jacobi_scale_DM_only, tidal_scale, baryons_tidal_scale
 
 ################################################
 ## Jacobi Radius

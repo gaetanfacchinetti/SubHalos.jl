@@ -109,6 +109,7 @@ end
 
 get_context_type(::FSLContext{T, C, HM, HP, PP}) where {T<:AbstractFloat, C<:Cosmology, HM<:HostModel, HP<:HaloProfile, PP<:ProfileProperties} = T, C, HM, HP, PP
 
+
 # options to run the code
 struct FSLOptions{T<:AbstractFloat}
     disk::Bool
@@ -119,7 +120,18 @@ struct FSLOptions{T<:AbstractFloat}
     c_max::T
 end
 
-FSLOptions(disk::Bool = true, stars::Bool = false, mc_model::Symbol = :SC12, use_tables::Bool = true, use_nn::Bool = true, ::Type{T} = Float64) where {T<:AbstractFloat} = FSLOptions(disk, stars, mc_model, use_tables, use_nn, T(500.0))
+@inline function FSLOptions(
+    disk::Bool = true, 
+    stars::Bool = false, 
+    mc_model::Symbol = :SC12, 
+    use_tables::Bool = true, 
+    use_nn::Bool = true, 
+    ::Type{T} = Float64
+    ) where {T<:AbstractFloat} 
+    
+    return  FSLOptions(disk, stars, mc_model, use_tables, use_nn, T(500.0))
+end
+
 
 mutable struct FSLModel{ 
     P<:FSLParams, 
@@ -130,13 +142,61 @@ mutable struct FSLModel{
     const context::Q
     const options::O
 
-    tidal_scale::Union{Nothing, Function, TidalScaleInterpolator}
+    tidal_scale::Union{Nothing, Function, TidalScaleNNInterpolator}
     min_concentration::Union{Nothing, Function}
     min_concentration_mt::Union{Nothing, Function}
     min_concentration_calibration::Union{Nothing, Function}
+
 end
 
-function set_tidal_scale_interpolator!(model::FSLModel, tsi::TidalScaleInterpolator)
+
+##################
+## In construction
+
+const GridInterpolator3D{T} = Interpolations.GriddedInterpolation{T, 3, Array{T, 3}, Interpolations.Gridded{Interpolations.Linear{Interpolations.Throw{Interpolations.OnGrid}}}, Tuple{Vector{T}, Vector{T}, Vector{T}}}
+
+# wrapper structure of the tidal scale type
+# in order to evaluate function without overhead 
+# and ensuring type stability
+struct TidalScaleInterpolator{
+    T<:AbstractFloat, 
+    S<:Real, 
+    U<:Real, 
+    C<:Cosmology{T, <:BkgCosmology{T}}, 
+    FSLP<:FSLParams{T}, 
+    HM<:HostModel{T, U}, 
+    HP<:HaloProfile{S}, 
+    PP<:ProfileProperties{T, S}
+    }
+
+    model::FSLModel{FSLP, FSLContext{T, C, HM, HP, PP}, FSLOptions{T}}
+    interp::Union{GridInterpolator3D{T}, TidalScaleNNInterpolator}
+end 
+
+function (f::TidalScaleInterpolator)(r_host::T, c200::T, m200::T) where {T<:AbstractFloat}
+    return f.interp(r_host, c200, m200)
+end
+
+
+function TidalScaleInterpolator(model::FSLModel)
+
+    # load the table
+    if model.use_nn === false
+
+        !(isdir(cache_location)) && mkdir(cache_location)
+        filenames  = readdir(cache_location)
+        file       = string(s) * "_" * get_hash(model, :tidal_scale) * ".jld2" 
+
+        !(file in filenames) && make_cache!(model, :tidal_scale)
+    end
+
+
+end
+
+###################
+
+
+function set_tidal_scale_interpolator!(model::FSLModel, tsi::TidalScaleNNInterpolator)
    
     if model.options.use_nn === false
         @warn "Not necessary to load an interpolator for this model if use_nn is set to false"
@@ -159,7 +219,6 @@ end
 @inline function load_tidal_scale_interpolator!(model::FSLModel)
     model.tidal_scale = load_tidal_scale_interpolator(model.context.host, model.context.subhalo_profile, model.context.cosmo, model.params.z, 200.0)
 end
-
 
 
 @inline function FSLModel(params::P, context::Q, options::O) where {P<:FSLParams,  Q<:FSLContext, O<:FSLOptions} 
@@ -189,38 +248,71 @@ function tidal_scale(r_host::T, c200::T, m200::T, model::FSLModel) where {T<:Abs
         q = model.context.q, θ = model.context.θ, disk = model.options.disk, stars = model.options.stars, use_tables = model.options.use_tables) 
 end 
 
+
+struct BissectionConcentration{
+    T<:AbstractFloat, 
+    S<:Real, 
+    U<:Real, 
+    C<:Cosmology{T, <:BkgCosmology{T}}, 
+    FSLP<:FSLParams{T}, 
+    HM<:HostModel{T, U}, 
+    HP<:HaloProfile{S}, 
+    PP<:ProfileProperties{T, S}
+    }
+
+    r_host::T
+    m200::T
+    model::FSLModel{FSLP, FSLContext{T, C, HM, HP, PP}, FSLOptions{T}}
+
+end
+
+
+function (f::BissectionConcentration{T, S, U, C, FSLP, HM, HP, PP})(
+    c200::T
+    ) where {T<:AbstractFloat, 
+    S<:Real, 
+    U<:Real, 
+    C<:Cosmology{T, <:BkgCosmology{T}}, 
+    FSLP<:FSLParams{T}, 
+    HM<:HostModel{T, U}, 
+    HP<:HaloProfile{S}, 
+    PP<:ProfileProperties{T, S}}
+   
+    # if we use interpolation tables then we use the interpolation tables   
+    (f.model.options.use_nn) && (return f.model.tidal_scale(f.r_host, c200, f.m200, f.model.context.θ, f.model.context.q) / f.model.params.ϵ_t - T(1))
+    #(f.model.options.use_tables) && (return f.model.tidal_scale(f.r_host, c200, f.m200) / f.model.params.ϵ_t - T(1))
+
+    subhalo = halo_from_mΔ_and_cΔ(f.model.context.subhalo_profile, f.m200, c200, Δ=T(200), ρ_ref = f.model.context.cosmo.bkg.ρ_c0)
+    return tidal_scale(f.r_host, subhalo, f.model.context.host, f.model.params.z, T(200), f.model.context.cosmo, pp=f.model.context.pp, q=f.model.context.q, θ=f.model.context.θ, disk=f.model.options.disk, stars=f.model.options.stars, use_tables=f.model.options.use_tables) / f.model.params.ϵ_t - T(1)
+end
+
+
 """ minimal concentration of surviving halos at position r_host (Mpc) with mass m200 (Msun) """
 function min_concentration(r_host::T, m200::T, model::FSLModel = dflt_FSLModel) where {T<:AbstractFloat}
 
     max_c = model.options.c_max
-    res = -1.0
+    res = T(-1)
 
-    # here we compare xt = rt/rs to the parameter ϵ_t
-    function _to_bisect(c200::AbstractFloat) 
-        
-        # if we use interpolation tables then we use the interpolation tables   
-        (model.options.use_nn) && (return model.tidal_scale(r_host, c200, m200, model.context.θ, model.context.q) / model.params.ϵ_t - 1.0)
-        (model.options.use_tables) && (return model.tidal_scale(r_host, c200, m200) / model.params.ϵ_t - 1.0)
-
-
-        subhalo = halo_from_mΔ_and_cΔ(model.context.subhalo_profile, m200, c200, Δ=200.0, ρ_ref = model.context.cosmo.bkg.ρ_c0)
-        return tidal_scale(r_host, subhalo, model.context.host, model.params.z, 200, model.context.cosmo) / model.params.ϵ_t - 1.0
-    end
+    f = BissectionConcentration(r_host, m200, model)
 
     try
-        res = Roots.find_zero(c200 -> _to_bisect(c200), (1.0, max_c), Roots.Bisection(), xrtol=1e-3)
+        res = Roots.find_zero(f, (T(1), max_c), Roots.Bisection(), xrtol=T(1e-3))
     catch e
         
         if isa(e, ArgumentError)
             # if the problem is that at large c we still have xt < ϵ_t then the min concentration is set to the max value of c
-            (_to_bisect(max_c) <= 0.0) && (return max_c)
-            (_to_bisect(1.0) >= 0.0) && (return 1.0)
+            (f(max_c) <= 0) && (return max_c)
+            (f(1.0) >= 0) && (return T(1))
         end
 
-        msg = "Impossible to compute min_concentration for rhost = "  * string(r_host) * " Mpc, m200 (cosmo) = " * string(m200) * " Msun | [min, mean, max] = " * string(_to_bisect.([1.0, (max_c + 1.0)/2.0, max_c])) * "\n" * e.msg 
+        msg::String = "Impossible to compute min_concentration for rhost = "  * string(r_host) * " Mpc, m200 (cosmo) = " * string(m200) * " Msun | [min, mean, max] = " * string(f.([1.0, (max_c + 1.0)/2.0, max_c])) * "\n" * e.msg 
         throw(ArgumentError(msg))
     end
+
+    return res
+
 end
+
 
 
 """ minimal concentration of surviving halos at position r_host (Mpc) with mass m200 (Msun) not including baryons """
@@ -232,12 +324,12 @@ function min_concentration_calibration(r_host::T, m200::T, model::FSLModel = dfl
     # here we compare xt = rt/rs to the parameter ϵ_t
     # for calibration on DM-only simulation only the Jacobi radius matters and ϵ_t = 1
     function _to_bisect(c200::AbstractFloat) 
-        subhalo = halo_from_mΔ_and_cΔ(model.context.subhalo_profile, m200, c200, Δ=200.0, ρ_ref = model.context.cosmo.bkg.ρ_c0)
-        return min(jacobi_scale_DM_only(r_host, subhalo, model.context.host), c200)  - 1.0
+        subhalo = halo_from_mΔ_and_cΔ(model.context.subhalo_profile, m200, c200, Δ=T(200), ρ_ref = model.context.cosmo.bkg.ρ_c0)
+        return min(jacobi_scale_DM_only(r_host, subhalo, model.context.host), c200)  - 1
     end
 
     try
-        res = Roots.find_zero(c200 -> _to_bisect(c200), (1.0, max_c), Roots.Bisection(), xrtol=1e-3)
+        res = Roots.find_zero(c200 -> _to_bisect(c200), (1, max_c), Roots.Bisection(), xrtol=T(1e-3))
     catch e
         if isa(e, ArgumentError)
             # if the problem is that at large c we still have xt < ϵ_t then the min concentration is set to the max value of c
@@ -253,7 +345,7 @@ end
 """ complementary cumulative distribution function of the concentration at min_concentration """
 function ccdf_concentration(r_host::T, m200::T, model::FSLModel = dflt_FSLModel) where {T<:AbstractFloat}
     
-    c_min = model.options.use_tables ? model.min_concentration(r_host, m200) : min_concentration(r_host, m200, model)
+    c_min = model.options.use_tables ? convert(T, model.min_concentration(r_host, m200)) : min_concentration(r_host, m200, model)
     return ccdf_concentration(c_min, m200,  model.params.z, model.context.cosmo, (@eval $(model.options.mc_model)))
 
 end
@@ -319,7 +411,7 @@ _pdf_rmc_FSL(r_host::Real, m200::Real, c200::Real, model::FSLModel) = pdf_positi
 _pdf_rm_FSL(r_host::Real, m200::Real, model::FSLModel) = pdf_position(r_host, model) * pdf_virial_mass(m200, model) * ccdf_concentration(r_host, m200, model)
 _pdf_m_knowing_r_FSL(m200::Real, r_host::Real, model::FSLModel) = pdf_virial_mass(m200, model) * ccdf_concentration(r_host, m200, model)
 _pdf_r_knowing_m_FSL(r_host::Real, m200::Real, model::FSLModel) =  pdf_virial_mass(m200, model) * ccdf_concentration(r_host, m200, model)
-_pdf_r_FSL(r_host::Real, model::FSLModel) = QuadGK.quadgk(lnm -> pdf_virial_mass(exp(lnm), model) * ccdf_concentration(r_host, exp(lnm), model) * exp(lnm), log(model.params.m_min), log(model.context.m200_host), rtol = 1e-3)[1] * pdf_position(r_host, model) 
+_pdf_r_FSL(r_host::T, model::FSLModel) where {T<:AbstractFloat} = convert(T, QuadGK.quadgk(lnm -> pdf_virial_mass(exp(lnm), model) * ccdf_concentration(r_host, exp(lnm), model) * exp(lnm), log(model.params.m_min), log(model.context.m200_host), rtol = 1e-3)[1] * pdf_position(r_host, model))
 _pdf_m_FSL(m200::Real, model::FSLModel) = QuadGK.quadgk(lnr -> pdf_position(exp(lnr), model) * ccdf_concentration(exp(lnr), m200, model) * exp(lnr), log(1e-2 * model.context.host.halo.rs), log(model.context.host.rt), rtol = 1e-3)[1] * pdf_virial_mass(m200, model)
 
 pdf_rmc_FSL(r_host::Real, m200::Real, c200::Real, model::FSLModel) = _pdf_rmc_FSL(r_host, m200, c200, model) / normalisation_factor(model)
@@ -334,7 +426,7 @@ density_m_knowing_r_FSL(m200::Real, r_host::Real, model::FSLModel) = _pdf_m_know
 density_r_knowing_m_FSL(r_host::Real, m200::Real, model::FSLModel) = _pdf_r_knowing_m_FSL(r_host, m200, model) * unevolved_number_subhalos(model) / (4.0 * π * r_host^2)
 
 pdf_r_FSL(r_host::Real, model::FSLModel) = _pdf_r_FSL(r_host, model) / normalisation_factor(model)
-density_r_FSL(r_host::Real, model::FSLModel) = _pdf_r_FSL(r_host, model) * unevolved_number_subhalos(model) / (4.0 * π * r_host^2)
+density_r_FSL(r_host::AbstractFloat, model::FSLModel) = _pdf_r_FSL(r_host, model) * unevolved_number_subhalos(model) / (4.0 * π * r_host^2)
 
 pdf_m_FSL(m200::Real, model::FSLModel) = _pdf_m_FSL(m200, model) / normalisation_factor(model)
 density_m_FSL(m200::Real, model::FSLModel) = _pdf_m_FSL(m200, model) * unevolved_number_subhalos(model)
@@ -360,8 +452,8 @@ function subhalo_mass_function_template_MT(x::Real, γ1::Real,  α1::Real, γ2::
 end
 
 
-pdf_virial_mass(mΔ_sub::Real, mΔ_host::Real, params::FSLParamsPL{<:Real}) = mΔ_sub > params.m_min ? (params.α_m-1.0) * mΔ_host^(params.α_m - 1.0) * 1.0/( (mΔ_host/params.m_min)^(params.α_m - 1.0) - 1.0 ) * mΔ_sub^(-params.α_m) : 0.0
-pdf_virial_mass(mΔ_sub::Real, mΔ_host::Real, params::FSLParamsMT{<:Real}) = mΔ_sub > params.m_min ? subhalo_mass_function_template_MT(mΔ_sub / mΔ_host, params.γ_1, params.α_1, params.γ_2, params.α_2, params.β, params.ζ) / mΔ_host / unevolved_number_subhalos(mΔ_host, params) : 0.0
+pdf_virial_mass(mΔ_sub::T, mΔ_host::T, params::FSLParamsPL{T}) where {T<:AbstractFloat} = mΔ_sub > params.m_min ? (params.α_m-1) * mΔ_host^(params.α_m - 1) * 1/( (mΔ_host/params.m_min)^(params.α_m - 1) - 1) * mΔ_sub^(-params.α_m) : zero(T)
+pdf_virial_mass(mΔ_sub::T, mΔ_host::T, params::FSLParamsMT{T}) where {T<:AbstractFloat} = mΔ_sub > params.m_min ? subhalo_mass_function_template_MT(mΔ_sub / mΔ_host, params.γ_1, params.α_1, params.γ_2, params.α_2, params.β, params.ζ) / mΔ_host / unevolved_number_subhalos(mΔ_host, params) : 0.0
 
 
 @doc raw""" 
@@ -397,10 +489,10 @@ end
 
 pdf_concentration(c200::Real, m200::Real, model::FSLModel) = pdf_concentration(c200, m200, model.params.z, model.context.cosmo, (@eval $(model.options.mc_model)))
 
-function ccdf_concentration(c200::Real,  m200::Real, z::Real, cosmo::Cosmology, ::Type{T}) where {T<:MassConcentrationModel}
+function ccdf_concentration(c200::T,  m200::T, z::T, cosmo::Cosmology{T, BKG}, ::Type{M}) where {M<:MassConcentrationModel, T<:AbstractFloat, BKG<:BkgCosmology{T}}
     
-    σ_c = std_mass_concentration(m200, T)
-    median_c = median_concentration(m200, z, cosmo, T)
+    σ_c = std_mass_concentration(m200, M)
+    median_c = median_concentration(m200, z, cosmo, M)
 
     Kc = 0.5 * SpecialFunctions.erfc(-log(median_c) / (sqrt(2.0) * σ_c))
 
@@ -409,6 +501,6 @@ function ccdf_concentration(c200::Real,  m200::Real, z::Real, cosmo::Cosmology, 
 end
 
 
-pdf_position(r::Real, host::HostModel, cosmo::Cosmology = planck18) = 4 * π  * r^2 * ρ_halo(r, host.halo) / mΔ(host.halo, 200, cosmo)
-pdf_position(r::Real, model::FSLModel) =  4 * π  * r^2 * ρ_halo(r, model.context.host.halo) / model.context.m200_host
+pdf_position(r::T, host::HostModel{T, U}, cosmo::Cosmology{T, BKG} = planck18) where {T<:AbstractFloat, U<:Real, BKG<:BkgCosmology{T}} = 4 * π  * r^2 * ρ_halo(r, host.halo) / mΔ(host.halo, 200, cosmo)
+pdf_position(r::AbstractFloat, model::FSLModel) =  4 * π  * r^2 * ρ_halo(r, model.context.host.halo) / model.context.m200_host
 

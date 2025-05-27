@@ -59,10 +59,10 @@ end
 pseudo_mass_I(b::Real, rt::Real, sh::Halo) = pseudo_mass_I(b/sh.rs, rt/sh.rs, sh.hp)
 
 
-const Interpolator{T} = Interpolations.GriddedInterpolation{T, 2, Matrix{T}, Interpolations.Gridded{Interpolations.Linear{Interpolations.Throw{Interpolations.OnGrid}}}, Tuple{Vector{T}, Vector{T}}}
+const GridInterpolator2D{T} = Interpolations.GriddedInterpolation{T, 2, Matrix{T}, Interpolations.Gridded{Interpolations.Linear{Interpolations.Throw{Interpolations.OnGrid}}}, Tuple{Vector{T}, Vector{T}}}
 
 struct PseudoMass{T<:AbstractFloat, S<:Real}
-    interp::Interpolator{T}
+    interp::GridInterpolator2D{T}
     log10_βmin::T
     log10_βmax::T
     log10_xtmin::T
@@ -303,4 +303,10 @@ end
 
 β_min(q::Real, r_host::Real, rs::Real, host::HostModel, θ::Real = π/3, use_tables::Bool = true) = b_min(q, r_host, host, θ, use_tables) / rs
 
+
+function weight_b_min(b::T, r_host::T, host::HostModel{T, U}, θ::T, use_tables::Bool = true) where {T<:AbstractFloat, U<:Real}
+    b_max   = use_tables ? host.maximum_impact_parameter(r_host) : maximum_impact_parameter(r_host, host)
+    n_stars = use_tables ? host.number_stellar_encounters(r_host) * 0.5 / cos(θ) : number_stellar_encounters(r_host, host, θ)
+    return 1 - (1-T(b/b_max)^2)^n_stars
+end
 
