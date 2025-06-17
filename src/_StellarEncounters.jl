@@ -17,7 +17,7 @@
 ##################################################################################
 
 
-export pseudo_mass_I, ProfileProperties, solve_xt_new, average_δw2_stars, average_δv2_stars, average_δu2_stars, average_energy_kick_stars, b_min, β_min
+export pseudo_mass_I, PseudoMass, ProfileProperties, solve_xt_new, average_δw2_stars, average_δv2_stars, average_δu2_stars, average_energy_kick_stars, b_min, β_min
 export moments_relative_velocity_kms, average_inverage_relative_velocity_sqr_kms, average_relative_velocity_kms, average_inverse_relative_velocity_kms
 
 ###################################

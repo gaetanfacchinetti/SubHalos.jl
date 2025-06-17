@@ -26,8 +26,8 @@ export mean_velocity_kick_approx_sqr, median_ΔE_CL_approx, ccdf_ΔE_CL_approx
 export Δv2, mean_ΔE, reduced_Δv2, reduced_mean_ΔE, median_ΔE
 export _save_inverse_cdf_η, _load_inverse_cdf_η
 
-average_inverse_relative_speed(σ::T, v_star::T) where {T<:AbstractFloat} = SpecialFunctions.erf(v_star/(sqrt(2.0) * σ))/v_star
-average_inverse_relative_speed_sqr(σ::T, v_star::T) where {T<:AbstractFloat} = sqrt(2.0)* SpecialFunctions.dawson(v_star/(sqrt(2.0) * σ)) / (σ * v_star)
+average_inverse_relative_speed(σ::T, v_star::T) where {T<:AbstractFloat} = SpecialFunctions.erf(v_star/(sqrt(T(2)) * σ))/v_star
+average_inverse_relative_speed_sqr(σ::T, v_star::T) where {T<:AbstractFloat} = sqrt(T(2))* SpecialFunctions.dawson(v_star/(sqrt(T(2)) * σ)) / (σ * v_star)
 
 
 function cdf_η(η::T, σ::T, v_star::T, mstar_avg::T, v_avg::T, host::HM) where {T<:AbstractFloat, U<:Real, HM<:HostModel{T, U}}
@@ -41,12 +41,12 @@ function cdf_η(η::T, σ::T, v_star::T, mstar_avg::T, v_avg::T, host::HM) where
         return res
     end
 
-    return QuadGK.quadgk(lnm -> integrand(exp(lnm)) * stellar_mass_function(exp(lnm), host) * exp(lnm), log(1e-7), log(10.0^1.8), rtol=1e-10)[1]
+    return QuadGK.quadgk(lnm -> integrand(exp(lnm)) * stellar_mass_function(exp(lnm), host) * exp(lnm), log(T(1e-7)), log(T(10.0^1.8)), rtol=T(1e-7))[1]
 end
 
 
 function inverse_cdf_η(rnd::T, σ::T, v_star::T, mstar_avg::T, v_avg::T, host::HM) where {T<:AbstractFloat, U<:Real, HM<:HostModel{T, U}} 
-    return exp(Roots.find_zero(lnu -> cdf_η(exp(lnu), σ, v_star, mstar_avg, v_avg, host) - rnd, (log(1e-8), log(1e+6)), Roots.Bisection(), rtol=1e-10, atol=1e-10)) 
+    return exp(Roots.find_zero(lnu -> cdf_η(exp(lnu), σ, v_star, mstar_avg, v_avg, host) - rnd, (log(T(1e-8)), log(T(1e+6))), Roots.Bisection(), rtol=T(1e-7), atol=T(1e-7))) 
 end
 
 
@@ -214,6 +214,7 @@ function draw_velocity_kick_complex(
     subhalo::H, 
     r_host::T, 
     host::HM,
+    pm::PseudoMass{T, S},
     θ::T = T(π/3.0),
     xt::Union{T, Nothing} = nothing; 
     nrep::Int = 1, nmem::Int = 10000,
@@ -273,9 +274,9 @@ function draw_velocity_kick_complex(
         β_norm = (sqrt.(rand(ndraws[it]) .* (β_max^2 - β_min^2) .+ β_min^2))
         β  = β_norm .* exp.(- 2.0im  * π * rand(ndraws[it]))  # b/b_max assuming b_min = 0
         η  = inv_η.(rand(ndraws[it]))
-        pm = pseudo_mass_I.(β_norm, xt, subhalo.hp) ./ β
+        mpm = pm.(log10.(β_norm), log10.(xt)) ./ β
 
-        δw = η .* (pm .- 1.0 ./ (z' .+ β))
+        δw = η .* (mpm .- 1.0 ./ (z' .+ β))
 
         # summing all the contributions
         for j in 1:nchunks[it]
@@ -294,17 +295,19 @@ end
 
 See `StellarEncounters.draw_velocity_kick_complex`. Same function but for an approximate experssion
 of the velocity kick per star (the equivalent definition defined in arXiv:2201.09788)
-
 """
 function draw_velocity_kick_complex_approx(   
     x::VT, 
     subhalo::H, 
     r_host::T, 
     host::HM,
+    pm::PseudoMass{T, S},
     θ::T = T(π/3.0),
     xt::Union{T, Nothing} = nothing;
-    nrep::Int = 1, nmem::Int = 10000,
-    ηb::T = 0.0, use_tables::Bool = true
+    nrep::Int = 1, 
+    nmem::Int = 10000,
+    ηb::T = 0.0, 
+    use_tables::Bool = true
     ) where {T<:AbstractFloat, S <:Real, U<:Real, VT<:Vector{T}, H<:Halo{T, S}, HM<:HostModel{T, U}}
 
      # initialisation for a given value of r_host
@@ -353,14 +356,14 @@ function draw_velocity_kick_complex_approx(
     ###### end of initialisation
 
     ###### entring the main loop
-    Threads.@threads for it in 1:nturn
+    for it in 1:nturn
 
         # randomly sampling the distributions
         β = (sqrt.(rand(ndraws[it]) .* (β_max^2 - β_min^2) .+ β_min^2)) # b/b_max assuming b_min = 0
         η  = inv_η.(rand(ndraws[it]))
-        pm = pseudo_mass_I.(β, xt, subhalo.hp)
+        mpm = pm.(log10.(β), log10.(xt))
 
-        δw = η ./ β .* sqrt.(pm.^2 .+ 3.0 .* (1.0 .- 2.0.*pm) ./ (3.0 .+ 2.0 .* (x'./ β).^2)) .* exp.(- 2.0im  * π * rand(ndraws[it]))
+        δw = η ./ β .* sqrt.(mpm.^2 .+ 3.0 .* (1.0 .- 2.0.*mpm) ./ (3.0 .+ 2.0 .* (x'./ β).^2)) .* exp.(- 2.0im  * π * rand(ndraws[it]))
 
         # summing all the contributions
         for j in 1:nchunks[it]
@@ -368,7 +371,6 @@ function draw_velocity_kick_complex_approx(
         end
     end
     ##### end of the main loop
-
 
     return Δw
 
@@ -394,6 +396,7 @@ end
 function draw_velocity_kick_complex(
     subhalo::H, 
     host::HM,
+    pm::PseudoMass{T, S},
     x::Union{Vector{T}, StepRangeLen{T}}, 
     ψ::Union{Vector{T}, StepRangeLen{T}, Nothing} = nothing, 
     φ::Union{Vector{T}, StepRangeLen{T}, Nothing} = nothing,
@@ -403,7 +406,7 @@ function draw_velocity_kick_complex(
     dflt_ψ::T = T(π/2.0), dflt_φ::T = T(0.0), approx::Bool = false, 
     ηb::T = T(0.0),
     use_tables::Bool = true) where {T<:AbstractFloat, S<:Real, U<:Real, H<:Halo{T, S}, HM<:HostModel{T, U}}
-    
+
 
     (rt === nothing) && (rt = jacobi_radius(r_host, subhalo, host))
 
@@ -426,7 +429,7 @@ function draw_velocity_kick_complex(
         linear  =  LinearIndices(z_array)
         z       = z_array[linear[:]]
 
-        Δw = draw_velocity_kick_complex(z, subhalo, r_host, host, θ, rt/subhalo.rs; nrep = nrep, nmem = nmem, ηb = ηb, use_tables = use_tables)
+        Δw = draw_velocity_kick_complex(z, subhalo, r_host, host, pm, θ, rt/subhalo.rs; nrep = nrep, nmem = nmem, ηb = ηb, use_tables = use_tables)
 
         res_array = Array{Complex{T}, 4}(undef, nx, nψ, nφ, nrep)
         
@@ -441,7 +444,7 @@ function draw_velocity_kick_complex(
         (nψ != 1 && nφ == 1) && (res_array = res_array[:, :, 1, :])
         (nψ == 1 && nφ == 1) && (res_array = res_array[:, 1, 1, :])
     else
-        res_array = draw_velocity_kick_complex_approx(x, subhalo, r_host, host, θ, rt/subhalo.rs; nrep = nrep, nmem = nmem,  ηb = ηb, use_tables = use_tables)
+        res_array = draw_velocity_kick_complex_approx(x, subhalo, r_host, host, pm, θ, rt/subhalo.rs; nrep = nrep, nmem = nmem,  ηb = ηb, use_tables = use_tables)
     end
 
     # computing the normalisation
@@ -517,7 +520,7 @@ function mean_velocity_kick_approx_sqr(
         weight = T(1)
         
         if use_smooth_truncation
-            weight = β / β_max > 0.01 ?  1 - ((1-(β/β_max)^2) / (1-(β_min/β_max)^2))^n_stars : 1 + (n_stars * (β/β_max)^2 - 1) / (1-(β_min/β_max)^2)^n_stars
+            weight = 1 - ((1-(β/β_max)^2) / (1-(β_min/β_max)^2))^n_stars 
         end
 
         return (_pm(β)^2 .+ 3.0*(1.0 - 2.0 *_pm(β))./(3.0 .+ 2.0 .* (x/β).^2)) * weight
@@ -660,7 +663,7 @@ end
 
 
 ## some basic properties associated with the draw of the velocity kick
-Δv(Δw::Array{<:Complex}, δv0::AbstractFloat) = δv0^2 .* Δw
+Δv(Δw::Array{<:Complex}, δv0::AbstractFloat) = δv0 .* Δw
 Δv(draw::VelocityKickDraw) = Δv(draw.Δw, draw.δv0)
 Δv2(Δw::Array{<:Complex}, δv0::AbstractFloat) = δv0^2 .* abs2.(Δw)
 Δv2(draw::VelocityKickDraw) = Δv2(draw.Δw, draw.δv0)
@@ -774,18 +777,18 @@ ccdf_ΔE_CL(ΔE::Union{Vector{<:Real}, StepRangeLen{<:Real}}, draw::VelocityKick
 
 
 
-function _save_inverse_cdf_η(r_host::Real, host::HM; use_tables::Bool = true) where {T<:AbstractFloat, U<:Real, HM<:HostModel{T, U}}
+function _save_inverse_cdf_η(r_host::T, host::HM; use_tables::Bool = true) where {T<:AbstractFloat, U<:Real, HM<:HostModel{T, U}}
      
     σ         = (use_tables ? host.velocity_dispersion_spherical_kms(r_host) : velocity_dispersion_spherical_kms(r_host, host))
     v_star    = (use_tables ? host.circular_velocity_kms(r_host) : circular_velocity_kms(r_host, host))
     mstar_avg = moments_stellar_mass(1, host)
-    v_avg     = 1.0/average_inverse_relative_speed(σ, v_star) # km/s
+    v_avg     = T(1)/average_inverse_relative_speed(σ, v_star) # km/s
 
-    rnd_array = 10.0.^range(-8, -1e-12, 1000)
+    rnd_array = exp10.(range(T(-8), T(-1e-12), 1000))
 
     # -------------------------------------------
     # Checking if the file does not already exist
-    hash_value = hash((r_host, host.name))
+    hash_value = hash((r_host, host.name, T))
     file = "cdf_eta_" * string(hash_value, base=16) * ".jld2" 
  
     if file in readdir(".cache/")
@@ -806,7 +809,7 @@ end
 function _load_inverse_cdf_η(r_host::T, host::HM) where {T<:AbstractFloat, U<:Real, HM<:HostModel{T, U}}
     """ change that to a save function """
 
-    hash_value = hash((r_host, host.name))
+    hash_value = hash((r_host, host.name, T))
     filenames = readdir(".cache/")
     file = "cdf_eta_" * string(hash_value, base=16) * ".jld2" 
     !(file in filenames) && _save_inverse_cdf_η(r_host, host)
