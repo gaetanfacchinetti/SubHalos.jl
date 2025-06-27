@@ -19,6 +19,9 @@
 export pdf_concentration, rand_concentration, rand_concentration!
 
 
+########################
+## CONCENTRATION DISTRIBUTION
+
 std_mass_concentration(m::AbstractFloat, ::Type{SCP12}) = 0.14 * log(10.0)
 std_mass_concentration(m::AbstractFloat, ::Type{MCM}) where {MCM<:MassConcentrationModel} = std_mass_concentration(m, MCM)
 
@@ -28,9 +31,7 @@ function pdf_concentration(c200::T, m200::T, z::T = T(0), cosmo::Cosmology{T, <:
     σ_c = std_mass_concentration(m200, MCM)
     median_c = median_concentration(m200, z, cosmo, MCM)
 
-    Kc = 0.5 * SpecialFunctions.erfc(-log(median_c) / (sqrt(2.0) * σ_c))
-
-    return 1.0 / Kc / c200 / sqrt(2.0 * π) / σ_c * exp(-(log(c200) - log(median_c))^2 / 2.0 / σ_c^2)
+    return LogNormal(log(median_c), σ_c)(c200)
 end
 
 
@@ -49,14 +50,7 @@ function rand_concentration(
     σ_c = std_mass_concentration(m200, MCM)
     log_median_c = log(median_concentration(m200, z, cosmo, MCM))
 
-    r = Random.randn(rng, T, n)
-    res = Vector{T}(undef, n)
-
-    @inbounds for i in 1:n
-        res[i] =  exp(muladd(σ_c, r[i], log_median_c))
-    end
-
-    return res
+    return rand(LogNormal(log_median_c, σ_c), n, rng)
 end
 
 
@@ -74,7 +68,134 @@ function rand_concentration!(
     σ_c = std_mass_concentration(m200, MCM)
     log_median_c = log(median_concentration(m200, z, cosmo, MCM))
 
-    Random.randn!(rng, c200)
-    c200 .= exp.(muladd.(σ_c, c200, log_median_c))
+    rand!(LogNormal(log_median_c, σ_c), c200, rng)
+end
+
+
+########################
+## MASS DISTRIBUTION
+
+abstract type VirialMassDistribution{T<:AbstractFloat} end
+
+struct PowerDistribution{T<:AbstractFloat} <: VirialMassDistribution{T}
+    # basic parameters of the model
+    α_m::T
+    m_min::T
+end
+
+struct PowerExpDistribution{T<:AbstractFloat} <: VirialMassDistribution{T}
+    γ_1::T
+    α_1::T
+    γ_2::T
+    α_2::T
+    β::T
+    ζ::T
+    m_min::T
+end
+
+@doc raw""" 
+    subhalo_mass_function_template_MT(x, γ1, α1, γ2, α2, β, ζ)
+
+Template function for the subhalo mass function fitted on merger trees:
+
+``m_Δ^{\rm host} \frac{\partial N(m_Δ^{\rm sub}, z=0)}{\partial m_Δ^{\rm sub}} = \left(\gamma_1 x^{-\alpha_1} + \gamma_2 x^{-\alpha_2}\right)  e^{-\beta x^\zeta}``
+
+The first argument, `x::Real`, is the ratio of the subhalo over the host mass ``m_Δ^{\rm sub} / m_Δ^{\rm host}.``
+"""
+function subhalo_mass_function_template_MT(x::T, γ1::T,  α1::T, γ2::T, α2::T, β::T, ζ::T) where {T<:AbstractFloat}
+    return (γ1*x^(-α1) + γ2*x^(-α2)) * exp(-β * x^ζ )
+end
+
+function unevolved_number_subhalos(mΔ_host::T, params::PowerDistribution{T}) where {T<:AbstractFloat}
+    
+    _integral(x::Real, γ::Real, α::Real, β::Real, ζ::Real) = γ  / ζ  * ( x^(1.0-α) * SpecialFunctions.expint( (α-1.0)/ζ + 1.0,  β * x^ζ ) - SpecialFunctions.expint( (α-1.0)/ζ + 1.0,  β ))
+    return _integral( params.m_min / mΔ_host, params.γ_1, params.α_1, params.β, params.ζ) + _integral(params.m_min / mΔ_host, params.γ_2, params.α_2, params.β, params.ζ)
+
+end
+
+
+function (f::PowerDistribution)(mΔ_sub::T, mΔ_host::T) where {T<:AbstractFloat}
+
+    if mΔ_sub > f.m_min
+        return (f.α_m-1) * mΔ_host^(f.α_m - 1) * 1/( (mΔ_host/f.m_min)^(f.α_m - 1) - 1) * mΔ_sub^(-f.α_m)
+    end
+
+    return zero(T)
+
+end
+
+function (f::PowerExpDistribution)(mΔ_sub::T, mΔ_host::T) where {T<:AbstractFloat}
+
+    if mΔ_sub > f.m_min
+        return subhalo_mass_function_template_MT(mΔ_sub / mΔ_host, f.γ_1, f.α_1, f.γ_2, f.α_2, f.β, f.ζ) / mΔ_host / unevolved_number_subhalos(mΔ_host, f)f
+    end
+
+    return zero(T)
+end
+
+
+pdf_virial_mass(mΔ_sub::T, mΔ_host::T, dist::VirialMassDistribution{T}) where {T<:AbstractFloat} = dist(mΔ_sub, mΔ_host)
+
+
+
+
+
+struct SubHaloPopulationModel{
+    T<:AbstractFloat, 
+    VMD<:VirialMassDistribution{T},
+    HI<:HostInterpolation{T, <:HaloProfile, <:BulgeModel{T}, <:GasModel{T}, <:GasModel{T}, <:StellarModel{T, <:StellarMassModel{T}}},
+    SP<:HaloProfile,
+    HPI<:HaloProfileInterpolation{T, SP, <:PseudoMass{T, SP}, <:VelocityDispersion{T, SP}},
+    C<:Cosmology{T, <:BkgCosmology{T}}
+    } 
+
+    vmd::VMD
+    host::HI
+    subhalo_profile::HPI
+    cosmo::C
+    
+    m200_host::T
+   
+    disk::Bool
+    stars::Bool
+end
+
+
+function SubHaloPopulationModel(
+    vmd::VirialMassDistribution{T}, 
+    host::HostModelType{T}, 
+    subhalo_profile::HaloProfile,
+    cosmo::Cosmology{T, <:BkgCosmology{T}};
+    disk::Bool = true,
+    stars::Bool = true
+    ) where {T<:AbstractFloat}
+
+    # create HaloProfileInterpolation from the HaloProfile
+    subhalo_profile_interp = HaloProfileInterpolation(subhalo_profile, T)
+    
+    # create HostInterpolation from the input host
+    host_interp = HostInterpolation(host)
+
+    # precompute the virial mass of the host
+    m200 = mΔ(host.halo, T(200), cosmo)
+
+    return SubHaloPopulationModel(vmd, host_interp, subhalo_profile_interp, cosmo, m200, disk, stars)
+
+end
+
+
+function SubHaloPopulationModel(
+    vmd::VirialMassDistribution{T}, 
+    host_interp::HostInterpolationType{T}, 
+    subhalo_profile_interp::HaloProfileInterpolationType{T},
+    cosmo::Cosmology{T, <:BkgCosmology{T}};
+    disk::Bool = true,
+    stars::Bool = true
+    ) where {T<:AbstractFloat}
+
+    # precompute the virial mass of the host
+    m200 = mΔ(host_interp.halo, T(200), cosmo)
+
+    return SubHaloPopulationModel(vmd, host_interp, subhalo_profile_interp, cosmo, m200, disk, stars)
 
 end
