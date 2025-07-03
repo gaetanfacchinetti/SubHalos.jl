@@ -147,7 +147,9 @@ function tidal_scale_one_crossing!(
     hpi::HPI,
     host::HI,
     n_stars::Int,
-    tables::OneCrossingArrays{T}
+    tables::OneCrossingArrays{T};
+    disk::Bool = true,
+    stars::Bool = true
 ) where {
     T<:AbstractFloat,
     H<:HaloType{T},
@@ -159,19 +161,26 @@ function tidal_scale_one_crossing!(
     x = exp10.(log10_x)
     x2 = @. x^2
 
-    # Random sampling
-    rand_vec = tables.rand_vec
-    Random.rand!(rand_vec)
+    # populate the entry of the tables with 
+    # drawn realisations if stellar encounters
+    # are taken into account
+    if stars === true
 
-    β_max = maximum_impact_parameter(r_host, host) / subhalo.rs
-    
-    @views begin
-        tables.β .= @. sqrt(rand_vec[1:n_stars]) * β_max
-        tables.α .= @. 2 * π * rand_vec[n_stars+1:2*n_stars]
-        tables.sα .= sin.(tables.α)
-        tables.cα .= cos.(tables.α)
-        rand_stellar_mass!(tables.m_stars, rand_vec[2n_stars+1:end], host())
-        tables.mpm .= hpi.pseudo_mass.(log10.(tables.β), log10_xt)
+        # Random sampling
+        rand_vec = tables.rand_vec
+        Random.rand!(rand_vec)
+
+        β_max = maximum_impact_parameter(r_host, host) / subhalo.rs
+        
+        @views begin
+            tables.β .= @. sqrt(rand_vec[1:n_stars]) * β_max
+            tables.α .= @. 2 * π * rand_vec[n_stars+1:2*n_stars]
+            tables.sα .= sin.(tables.α)
+            tables.cα .= cos.(tables.α)
+            rand_stellar_mass!(tables.m_stars, rand_vec[2n_stars+1:end], host())
+            tables.mpm .= hpi.pseudo_mass.(log10.(tables.β), log10_xt)
+        end
+
     end
 
 
@@ -187,7 +196,9 @@ function tidal_scale_one_crossing!(
     δv0 = 2 * constant_G_NEWTON(KiloMeters, Msun, Seconds, T) / convert_lengths(subhalo.rs, MegaParsecs, KiloMeters) / norm_v_rel_kms
 
     # Disk shocking
-    compute_disk_shocking_kick!(tables.Δv_ds, x, tables.ψ, tables.φ, r_host, norm_v_subhalo_kms, xt, θ, subhalo, hpi, host)
+    if disk === true
+        compute_disk_shocking_kick!(tables.Δv_ds, x, tables.ψ, tables.φ, r_host, norm_v_subhalo_kms, xt, θ, subhalo, hpi, host)
+    end
 
     # Constants
     η_subhalo_2 = (norm_v_subhalo_kms / norm_v_rel_kms)^2
@@ -208,7 +219,7 @@ function tidal_scale_one_crossing!(
     ni, nj, nk = size(tables.Δv_se)
     frac_average_angle = similar(x)
 
-    
+    # loop over the radius x
     @inbounds for i in 1:ni
         
         frac_average_angle[i] = zero(T)
@@ -217,48 +228,79 @@ function tidal_scale_one_crossing!(
         ve_i = tables.ve_kms[i]
         σ_i = tables.σ_sub_kms[i]
 
+
+        # loop over the angles
         @inbounds for j in 1:nj, k in 1:nk
-
-            cψ, sψ = tables.cψ[j], tables.sψ[j]
-            cψ2, sψ2 = tables.cψ2[j], tables.sψ2[j]
-            cφ, sφ = tables.cφ[k], tables.sφ[k]
-            sφ2 = tables.sφ2[k]
-
-            xev2 = x2i * (cψ2 * η_subhalo_2 + sψ2 * sφ2 * η_star_2 - 2 * cψ * sψ * sφ * η_subhalo_stars)
 
             sum1 = zero(T); sum2 = zero(T); sum3 = zero(T)
 
-            pref1_x = xi * (cψ * (η_subhalo_2 - 1) - sψ * sφ * η_subhalo_stars)
-            pref2_x = - xi * sψ * cφ 
-            pref3_x = xi * (sψ * sφ * (η_star_2 - 1) - cψ * η_subhalo_stars)
+            # only perform the heavy computation if we
+            if stars === true
 
-            @inbounds @simd for l in 1:n_stars
+                cψ, sψ = tables.cψ[j], tables.sψ[j]
+                cψ2, sψ2 = tables.cψ2[j], tables.sψ2[j]
+                cφ, sφ = tables.cφ[k], tables.sφ[k]
+                sφ2 = tables.sφ2[k]
 
-                β, m_star, mpm, cα, sα = tables.β[l], tables.m_stars[l], tables.mpm[l], tables.cα[l], tables.sα[l]
+                xev2 = x2i * (cψ2 * η_subhalo_2 + sψ2 * sφ2 * η_star_2 - 2 * cψ * sψ * sφ * η_subhalo_stars)
 
-                one_over_denom = 1 / (x2i + β^2 - xev2 + 2 * xi * β * (sψ * cφ * cα + sψ * sφ * sα * γ_star_subhalo + cψ * cα * γ_subhalo_star))
+                pref1_x = xi * (cψ * (η_subhalo_2 - 1) - sψ * sφ * η_subhalo_stars)
+                pref2_x = - xi * sψ * cφ 
+                pref3_x = xi * (sψ * sφ * (η_star_2 - 1) - cψ * η_subhalo_stars)
 
-                # each component along nv, n1, and n2
-                sum1 += m_star * ( (pref1_x - β * sα * γ_subhalo_star) * one_over_denom + mpm * sα * γ_subhalo_star )
-                sum2 += m_star * ( (pref2_x - β * cα) * one_over_denom + mpm * cα)
-                sum3 += m_star * ( (pref3_x - β * sα * γ_star_subhalo) * one_over_denom + mpm * sα * γ_star_subhalo )
+                # loop over the encounters
+                @inbounds @simd for l in 1:n_stars
+
+                    β, m_star, mpm, cα, sα = tables.β[l], tables.m_stars[l], tables.mpm[l], tables.cα[l], tables.sα[l]
+
+                    one_over_denom = 1 / (x2i + β^2 - xev2 + 2 * xi * β * (sψ * cφ * cα + sψ * sφ * sα * γ_star_subhalo + cψ * cα * γ_subhalo_star))
+
+                    # each component along nv, n1, and n2
+                    sum1 += m_star * ( (pref1_x - β * sα * γ_subhalo_star) * one_over_denom + mpm * sα * γ_subhalo_star )
+                    sum2 += m_star * ( (pref2_x - β * cα) * one_over_denom + mpm * cα)
+                    sum3 += m_star * ( (pref3_x - β * sα * γ_star_subhalo) * one_over_denom + mpm * sα * γ_star_subhalo )
+                
+                end
             
             end
 
             Δv_se = view(tables.Δv_se, i, j, k, :)
-            Δv_ds = view(tables.Δv_ds, i, j, k, :)
             
             Δv_se[1] = δv0 * sum1
             Δv_se[2] = δv0 * sum2
             Δv_se[3] = δv0 * sum3
 
-            Δv1 = Δv_se[1] + Δv_ds[1]
-            Δv2 = Δv_se[2] + Δv_ds[2]
-            Δv3 = Δv_se[3]
+            if disk === true
+                
+                Δv_ds = view(tables.Δv_ds, i, j, k, :)
+
+                if stars === true
+
+                    Δv1 = Δv_se[1] + Δv_ds[1]
+                    Δv2 = Δv_se[2] + Δv_ds[2]
+                    Δv3 = Δv_se[3]
+
+                else
+
+                    Δv1 = Δv_ds[1]
+                    Δv2 = Δv_ds[2]
+                    Δv3 = zero(T)
+
+                end
+
+            else
+
+                Δv1 = Δv_se[1]
+                Δv2 = Δv_se[2]
+                Δv3 = Δv_se[3]
+            
+            end
 
             tables.Δv[i, j, k]   = sqrt(Δv1^2 + Δv2^2 + Δv3^2)
             tables.frac[i, j, k] = fraction_particles(max(-ve_i, ve_i - tables.Δv[i, j, k]), ve_i, σ_i) - fraction_particles(-ve_i, ve_i, σ_i)
         end
+
+        
 
         for j in 1:nj-1, k in 1:nk-1
             frac_average_angle[i] += -T(0.25) * (
@@ -297,7 +339,9 @@ function tidal_scale(
     host::HI,
     n_stars::Int;
     z::T = T(0),
-    cosmo::C = dflt_cosmo(T)
+    cosmo::C = dflt_cosmo(T),
+    stars::Bool = true,
+    disk::Bool = true
     ) where {
         T<:AbstractFloat,
         H<:HaloType{T}, 
@@ -314,12 +358,12 @@ function tidal_scale(
 
     xt_array = Vector{T}(undef, 0)
 
-    append!(xt_array, tidal_scale_one_crossing!(xt, r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays))
+    append!(xt_array, tidal_scale_one_crossing!(xt, r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays, stars = stars, disk = disk))
     (xt_array[end] <= T(1e-2)) && (return xt_array, θ, norm_v_subhalo_kms)
     
     for i in 2:n_cross
         v_subhalo_kms .= - v_subhalo_kms
-        append!(xt_array, tidal_scale_one_crossing!(xt_array[end], r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays))
+        append!(xt_array, tidal_scale_one_crossing!(xt_array[end], r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays, stars = stars, disk = disk))
         (xt_array[end] <= T(1e-2)) && (return xt_array, θ, norm_v_subhalo_kms)
     end
 
@@ -335,6 +379,9 @@ function tidal_scale_hist(
     n = 1,
     z::T = T(0),
     cosmo::C = dflt_cosmo(T),
+    stars::Bool = true,
+    disk::Bool = true,
+    c200::T = -T(1)
     ) where {
         T<:AbstractFloat,
         HPI<:HaloProfileInterpolationType{T}, 
@@ -347,7 +394,11 @@ function tidal_scale_hist(
     n_cross = 2 * number_circular_orbits(r_host, host, z, cosmo.bkg)
 
     # draw a given subhalo from the concentration distribution
-    c_array = rand_concentration(n, m200, z)
+    if c200 < T(0)
+        c_array = rand_concentration(n, m200, z)
+    else
+        c_array = [c200 for _ ∈ 1:n]
+    end
 
     # allocate memory (to avoid memory leakage)
     arrays = allocate_one_crossing(n_stars, 20, 10, 10, T)
@@ -377,7 +428,7 @@ function tidal_scale_hist(
         norm_v_subhalo_kms = LinearAlgebra.norm(v_subhalo_kms)
         θ = acos(v_subhalo_kms[3] / norm_v_subhalo_kms)
 
-        _xt, _μt = tidal_scale_one_crossing!(xt, r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays)
+        _xt, _μt = tidal_scale_one_crossing!(xt, r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays, stars = stars, disk = disk)
         _mt = 4 * π * subhalo.rs^3 * subhalo.ρs * _μt
         
         append!(xt_one_sub, _xt)
@@ -388,7 +439,7 @@ function tidal_scale_hist(
         for i in 2:n_cross
             v_subhalo_kms .= - v_subhalo_kms
             
-            _xt, _μt = tidal_scale_one_crossing!(xt_one_sub[end], r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays)
+            _xt, _μt = tidal_scale_one_crossing!(xt_one_sub[end], r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays, stars = stars, disk = disk)
             _mt = 4 * π * subhalo.rs^3 * subhalo.ρs * _μt
 
             append!(xt_one_sub, _xt)
@@ -419,6 +470,8 @@ function tidal_scale(
     n = 1,
     z::T = T(0),
     cosmo::C = dflt_cosmo(T),
+    stars::Bool = true,
+    disk::Bool = true
     ) where {
         T<:AbstractFloat,
         HPI<:HaloProfileInterpolationType{T}, 
@@ -458,7 +511,7 @@ function tidal_scale(
         push!(θ_array, θ)
         push!(v_kms_array, norm_v_subhalo_kms)
         
-        xt_one_sub, μt = tidal_scale_one_crossing!(xt, r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays)
+        xt_one_sub, μt = tidal_scale_one_crossing!(xt, r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays, stars = stars, disk = disk)
         mt_one_sub = 4 * π * subhalo.rs^3 * subhalo.ρs * μt
         
         if xt_one_sub <= T(1e-2)
@@ -470,7 +523,7 @@ function tidal_scale(
         for i in 2:n_cross
             v_subhalo_kms .= - v_subhalo_kms
             
-            xt_one_sub, μt = tidal_scale_one_crossing!(xt_one_sub, r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays)
+            xt_one_sub, μt = tidal_scale_one_crossing!(xt_one_sub, r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays, stars = stars, disk = disk)
             mt_one_sub = 4 * π * subhalo.rs^3 * subhalo.ρs * μt
 
             (xt_one_sub <= T(1e-2)) && break
