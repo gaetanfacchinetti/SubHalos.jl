@@ -1,0 +1,281 @@
+##################################################################################
+# This file is part of SubHalos.jl
+#
+# Copyright (c) 2024, Gaétan Facchinetti
+#
+# SubHalos.jl is free software: you can redistribute it and/or modify it 
+# under the terms of the GNU General Public License as published by 
+# the Free Software Foundation, either version 3 of the License, or any 
+# later version. SubHalos.jl is distributed in the hope that it will be useful, 
+# but WITHOUT ANY WARRANTY; without even the implied warranty of 
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+# See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU 
+# General Public License along with 21cmCAST. 
+# If not, see <https://www.gnu.org/licenses/>.
+##################################################################################
+
+export tidal_scale
+
+function tidal_scale( 
+    xt::T,
+    r_host::T,
+    subhalo::H, 
+    hpi::HPI,
+    host::HI,
+    n_stars::Int;
+    z::T = T(0),
+    cosmo::C = dflt_cosmo(T),
+    stars::Bool = true,
+    disk::Bool = true
+    ) where {
+        T<:AbstractFloat,
+        H<:HaloType{T}, 
+        HPI<:HaloProfileInterpolationType{T}, 
+        HI<:HostInterpolationType{T},
+        C<:Cosmology{T, <:BkgCosmology{T}}}
+
+    arrays = allocate_one_crossing(n_stars, 20, 10, 10, T)
+    n_cross = 2 * number_circular_orbits(r_host, host, z, cosmo.bkg)
+    v_subhalo_kms = rand_3D_velocity_kms(1, r_host, host)[:, 1]
+
+    norm_v_subhalo_kms = LinearAlgebra.norm(v_subhalo_kms)
+    θ = acos(v_subhalo_kms[3] / norm_v_subhalo_kms)
+
+    xt_array = Vector{T}(undef, 0)
+
+    append!(xt_array, tidal_scale_one_crossing!(xt, r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays, stars, disk))
+    (xt_array[end] <= T(1e-2)) && (return xt_array, θ, norm_v_subhalo_kms)
+    
+    for i in 2:n_cross
+        v_subhalo_kms .= - v_subhalo_kms
+        append!(xt_array, tidal_scale_one_crossing!(xt_array[end], r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays, stars, disk))
+        (xt_array[end] <= T(1e-2)) && (return xt_array, θ, norm_v_subhalo_kms)
+    end
+
+    return xt_array, θ, norm_v_subhalo_kms
+end
+
+
+function tidal_scale_hist( 
+    r_host::T,
+    m200::T,
+    hpi::HPI,
+    host::HI;
+    n = 1,
+    z::T = T(0),
+    cosmo::C = dflt_cosmo(T),
+    stars::Bool = true,
+    disk::Bool = true,
+    c200::T = -T(1),
+    n_stars::Int = 0,
+    n_cross::Int = 0
+    ) where {
+        T<:AbstractFloat,
+        HPI<:HaloProfileInterpolationType{T}, 
+        HI<:HostInterpolationType{T},
+        C<:Cosmology{T, <:BkgCosmology{T}}}
+
+
+    # evaluate the number of stellar encounters per crossings and total number of crossings
+    n_stars = n_stars > 0 ? n_stars : number_stellar_encounters(r_host, host)
+    n_cross = n_cross > 0 ? n_cross : 2 * number_circular_orbits(r_host, host, z, cosmo.bkg)
+
+    # draw a given subhalo from the concentration distribution
+    if c200 < T(0)
+        c_array = rand_concentration(n, m200, z)
+    else
+        c_array = [c200 for _ ∈ 1:n]
+    end
+
+    # allocate memory (to avoid memory leakage)
+    arrays = allocate_one_crossing(n_stars, 20, 10, 10, T)
+
+    # prepare output arrays
+    xt_array = Vector{Vector{T}}(undef, 0)
+    mt_array = Vector{Vector{T}}(undef, 0)
+    xt_one_sub = Vector{T}(undef, 0)
+    mt_one_sub = Vector{T}(undef, 0)
+    θ_array  = Vector{T}(undef, 0)
+    v_kms_array = Vector{T}(undef, 0)
+
+    for i ∈ 1:n
+
+        # initialise the xt for this subhalo
+        xt_one_sub = []
+        mt_one_sub = []
+        
+        # create the subhalo object from the input mass and drawn concentration
+        subhalo = halo_from_mΔ_and_cΔ(hpi.hp, m200, c_array[i])
+
+        # get the jacobi scale first
+        xt = jacobi_scale(r_host, subhalo, host)
+
+        # draw a 3D velocity for the subhalo and infer norm and direction
+        v_subhalo_kms = rand_3D_velocity_kms(1, r_host, host)[:, 1]
+        norm_v_subhalo_kms = LinearAlgebra.norm(v_subhalo_kms)
+        θ = acos(v_subhalo_kms[3] / norm_v_subhalo_kms)
+
+        _xt, _μt, _ = tidal_scale_one_crossing!(xt, r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays, stars, disk)
+        _mt = 4 * π * subhalo.rs^3 * subhalo.ρs * _μt
+        
+        append!(xt_one_sub, _xt)
+        append!(mt_one_sub, _mt)
+
+        (_xt <= T(1e-2)) && continue
+        
+        for i in 2:n_cross
+            v_subhalo_kms .= - v_subhalo_kms
+            
+            _xt, _μt, _ = tidal_scale_one_crossing!(xt_one_sub[end], r_host, v_subhalo_kms, subhalo, hpi, host, n_stars, arrays, stars, disk)
+            _mt = 4 * π * subhalo.rs^3 * subhalo.ρs * _μt
+
+            append!(xt_one_sub, _xt)
+            append!(mt_one_sub, _mt)
+
+            (_xt <= T(1e-2)) && break
+        end
+
+        # add the new values to the collections
+        push!(xt_array, xt_one_sub)
+        push!(mt_array, mt_one_sub)
+        push!(θ_array, θ)
+        push!(v_kms_array, norm_v_subhalo_kms)
+
+    end
+
+
+    return xt_array, mt_array, θ_array, v_kms_array, c_array
+
+end
+
+
+struct MCResult{T<:AbstractFloat, U<:Int}
+    xt::Vector{T}
+    mt::Vector{T}
+    θ::Vector{T}
+    v::Vector{T}
+    c::Vector{T}
+    ns::Vector{U}
+    nc::Vector{U}
+    nt::Vector{U}
+    np::Vector{Vector{U}}
+end
+
+
+
+function tidal_scale( 
+    r_host::T,
+    m200::T,
+    hpi::HPI,
+    host::HI,
+    n::Int = 1,
+    stars::Bool = true,
+    disk::Bool = true,
+    z::T = T(0),
+    cosmo::C = dflt_cosmo(T);
+    nx::Int = 20,
+    nψ::Int = 10,
+    nφ::Int = 10
+    ) where {
+        T<:AbstractFloat,
+        HPI<:HaloProfileInterpolationType{T}, 
+        HI<:HostInterpolationType{T},
+        C<:Cosmology{T, <:BkgCosmology{T}}}
+
+
+    # draw a given subhalo from the concentration distribution
+    c_array = rand_concentration(n, m200, z)
+
+    # draw a 3D velocity for the subhalo and infer norm and direction
+    v_subhalo_kms = rand_3D_velocity_kms(n, r_host, host)
+    v_kms_array = sqrt.(sum(abs2, v_subhalo_kms; dims=1))[:]
+    θ_array = acos.(v_subhalo_kms[3, :] ./ v_kms_array)
+
+    # evaluate the number of stellar encounters per crossings
+    ns_array = round.(Int, number_stellar_encounters(r_host, host) .* 0.5 ./ abs.(cos.(θ_array)))
+
+    # prepare output arrays
+    xt_array = Vector{T}(undef, n)
+    mt_array = Vector{T}(undef, n)
+    nc_array = Vector{Int}(undef, n)
+    nt_array = Vector{Int}(undef, n)
+    np_array = Vector{Vector{Int}}(undef, n)
+    mt_one_sub = zero(T)
+
+    # allocate memory (to avoid memory leakage)
+    arrays = allocate_one_crossing(maximum(ns_array), nx, nψ, nφ, T)
+
+    # main loop of the Monte Carlo over different 
+    # realisation of subhalos properties
+    for i ∈ 1:n
+        
+        # create the subhalo object from the input mass and drawn concentration
+        subhalo = halo_from_mΔ_and_cΔ(hpi.hp, m200, c_array[i])
+
+        # get the jacobi scale first
+        xt_one_sub = jacobi_scale(r_host, subhalo, host)
+
+        # evaluate total number of crossing from the velocity
+        period = 2 * π * convert_lengths(r_host, MegaParsecs, KiloMeters) / v_kms_array[i] # in seconds
+        n_cross = 2 * floor(Int, convert_times(age_host(z, host, cosmo.bkg), GigaYears, Seconds) / period)
+
+        nc_array[i] = n_cross
+
+        # if no crossings of the disk we simply output the jacobi radius
+        # if no contributions from disk shocking or stars output the jacobi radius
+        if n_cross == 0 || (!disk && !stars)
+            xt_array[i] = xt_one_sub
+            mt_array[i] = 4 * π * subhalo.rs^3 * subhalo.ρs * μ_halo(xt_one_sub, hpi.hp)
+            nt_array[i] = 0
+            continue
+        end
+
+        # number of crossings
+        j = 0
+
+        # initialise a temporary holder for 
+        # the number of penetrative encounters
+        np_array_temp = Vector{Int}(undef, 0)
+
+        # loop on disk crossings
+        while j < n_cross && xt_one_sub > T(1e-2)
+
+            xt_one_sub, μt_one_sub, np_one_sub = tidal_scale_one_crossing!(
+                xt_one_sub, 
+                r_host, 
+                v_subhalo_kms[:, i], 
+                subhalo, 
+                hpi, 
+                host, 
+                ns_array[i], 
+                arrays, 
+                stars, 
+                disk)
+
+            # add the number of penetrative encounters
+            push!(np_array_temp, np_one_sub)
+
+            # tidal mass corresponding to the tidal scale
+            mt_one_sub = 4 * π * subhalo.rs^3 * subhalo.ρs * μt_one_sub
+
+            # reverse velocity for next crossing
+            v_subhalo_kms[:, i] .= - v_subhalo_kms[:, i]
+
+            # increment the number of crossings
+            j = j+1
+
+        end
+
+        # add the new values to the collections
+        xt_array[i] = xt_one_sub
+        mt_array[i] = mt_one_sub
+        nt_array[i] = j
+        np_array[i] = np_array_temp
+     
+    end
+
+    return MCResult(xt_array, mt_array, θ_array, v_kms_array, c_array, ns_array, nc_array, nt_array, np_array)
+
+end

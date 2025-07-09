@@ -29,7 +29,7 @@ import CosmoTools: KiloMeters, MegaParsecs, MegaYears, Meters, Seconds, Years, G
 import CosmoTools: escape_velocity_kms
 
 import HostHalos: number_circular_orbits, milky_way_MM17_g1, σ_stars, ρ_stars, stellar_mass_function
-import HostHalos: maximum_impact_parameter, number_stellar_encounters, moments_stellar_mass, velocity_dispersion_spherical_kms, circular_velocity_kms
+import HostHalos: maximum_impact_parameter, number_stellar_encounters, moments_stellar_mass, velocity_dispersion_spherical_kms, circular_velocity_kms, age_host
 import HostHalos: HostInterpolationType, HostInterpolation, HostModelType, HostModel, rand_stellar_mass!, rand_3D_velocity_kms
 import HostHalos: get_host_halo_type, ρ_host_spherical, m_host_spherical, σ_baryons
 import HostHalos: BulgeModel, GasModel, StellarMassModel, StellarModel
@@ -49,8 +49,9 @@ CACHE_LOCATION = ".cache/"
 include("./Probabilities.jl")
 include("./HaloProfileCache.jl")
 include("./SmoothStripping.jl")
-include("./DiskShocking.jl")
-include("./TidalStripping.jl")
+#include("./DiskShocking.jl")
+include("./MCTidalKernel.jl")
+include("./MCTidalScale.jl")
 include("./Population.jl")
 
 end
