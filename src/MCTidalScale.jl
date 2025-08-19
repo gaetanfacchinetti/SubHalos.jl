@@ -16,7 +16,7 @@
 # If not, see <https://www.gnu.org/licenses/>.
 ##################################################################################
 
-export tidal_scale
+export tidal_scale, MCResult, mc_save, mc_load, append!, convert
 
 function tidal_scale( 
     xt::T,
@@ -151,16 +151,94 @@ function tidal_scale_hist(
 end
 
 
-struct MCResult{T<:AbstractFloat, U<:Int}
+Base.@kwdef struct MCResult{T<:AbstractFloat, U<:Int}
+    
+    r_host::T
+    m200::T
+
+    stars::Bool
+    disk::Bool
+
     xt::Vector{T}
     mt::Vector{T}
     θ::Vector{T}
     v::Vector{T}
     c::Vector{T}
+    
     ns::Vector{U}
     nc::Vector{U}
     nt::Vector{U}
     np::Vector{Vector{U}}
+
+end
+
+function Base.append!(res::MCResult{T, U}, add::MCResult{V, U}) where {T, V, U}
+    
+    for name in fieldnames(MCResult)
+        
+        f1 = getfield(res, name)
+        f2 = getfield(add, name)
+        
+        if f1 isa AbstractVector
+            
+            if V != T && f2 isa AbstractVector{V}
+                append!(f1, T.(f2))   # append whole vector contents
+            else
+                append!(f1, f2)
+            end
+        end
+
+    end
+
+    return res
+
+end
+
+function Base.convert(::Type{T}, res::MCResult{V, U}) where {T, V, U}
+    
+    if T == V
+        return res
+    end
+
+    params = Dict{Symbol, Any}()
+
+    for field in fieldnames(MCResult)
+
+        value = getfield(res, field)
+        
+        if value isa Union{V, AbstractVector{V}}
+            params[field] = T.(value)
+        else
+            params[field] = value
+        end
+        
+    end
+
+    return MCResult{T, U}(; params...)
+
+end
+
+function mc_save(filename::String, result::MCResult)
+
+    try
+        JLD2.jldsave(filename; Dict(field => getfield(result, field)  for field in fieldnames(MCResult))...)
+    catch e
+        println("Impossible to save the result of the monte carlo")
+        rethrow(e)
+    end
+
+end
+
+function mc_load(filename::String)
+
+    try
+        data = JLD2.jldopen(filename)
+        return MCResult(; Dict(Symbol(k) => data[k] for k in keys(data))...)
+    catch e
+        println("Impossible to load the result of the monte carlo")
+        rethrow(e)
+    end
+
 end
 
 
@@ -175,9 +253,12 @@ function tidal_scale(
     disk::Bool = true,
     z::T = T(0),
     cosmo::C = dflt_cosmo(T);
-    nx::Int = 20,
-    nψ::Int = 10,
-    nφ::Int = 10
+    nx::Int = 16,
+    nψ::Int = 8,
+    nφ::Int = 16,
+    n_cross::Int = -1,
+    n_stars::Int = -1,
+    seed::Int = -1,
     ) where {
         T<:AbstractFloat,
         HPI<:HaloProfileInterpolationType{T}, 
@@ -185,31 +266,43 @@ function tidal_scale(
         C<:Cosmology{T, <:BkgCosmology{T}}}
 
 
+    # fix the random seed
+    if seed > 0
+        Random.seed!(seed)
+    end
+
     # draw a given subhalo from the concentration distribution
     c_array = rand_concentration(n, m200, z)
 
     # draw a 3D velocity for the subhalo and infer norm and direction
     v_subhalo_kms = rand_3D_velocity_kms(n, r_host, host)
-    v_kms_array = sqrt.(sum(abs2, v_subhalo_kms; dims=1))[:]
+    v_kms_array = sqrt.(sum(abs2, v_subhalo_kms; dims=1))[1, :]
     θ_array = acos.(v_subhalo_kms[3, :] ./ v_kms_array)
 
     # evaluate the number of stellar encounters per crossings
-    ns_array = round.(Int, number_stellar_encounters(r_host, host) .* 0.5 ./ abs.(cos.(θ_array)))
+    ns_array = fill(n_stars, n)
+    
+    if n_stars < 0
+        ns_array .= round.(Int, number_stellar_encounters(r_host, host) .* 0.5 ./ abs.(cos.(θ_array)))
+    end
+
+    # default number of crossings
+    nc_array = fill(n_cross, n)
 
     # prepare output arrays
     xt_array = Vector{T}(undef, n)
     mt_array = Vector{T}(undef, n)
-    nc_array = Vector{Int}(undef, n)
     nt_array = Vector{Int}(undef, n)
     np_array = Vector{Vector{Int}}(undef, n)
     mt_one_sub = zero(T)
 
-    # allocate memory (to avoid memory leakage)
-    arrays = allocate_one_crossing(maximum(ns_array), nx, nψ, nφ, T)
 
     # main loop of the Monte Carlo over different 
     # realisation of subhalos properties
     for i ∈ 1:n
+
+        # allocate memory (to avoid memory leakage)
+        arrays = allocate_one_crossing(ns_array[i], nx, nψ, nφ, T)
         
         # create the subhalo object from the input mass and drawn concentration
         subhalo = halo_from_mΔ_and_cΔ(hpi.hp, m200, c_array[i])
@@ -218,14 +311,15 @@ function tidal_scale(
         xt_one_sub = jacobi_scale(r_host, subhalo, host)
 
         # evaluate total number of crossing from the velocity
-        period = 2 * π * convert_lengths(r_host, MegaParsecs, KiloMeters) / v_kms_array[i] # in seconds
-        n_cross = 2 * floor(Int, convert_times(age_host(z, host, cosmo.bkg), GigaYears, Seconds) / period)
+        if n_cross < 0
+            period = 2 * π * convert_lengths(r_host, MegaParsecs, KiloMeters) / v_kms_array[i] # in seconds
+            nc_array[i] = 2 * floor(Int, convert_times(age_host(z, host, cosmo.bkg), GigaYears, Seconds) / period)
+        end
 
-        nc_array[i] = n_cross
 
         # if no crossings of the disk we simply output the jacobi radius
         # if no contributions from disk shocking or stars output the jacobi radius
-        if n_cross == 0 || (!disk && !stars)
+        if nc_array[i] == 0 || (!disk && !stars)
             xt_array[i] = xt_one_sub
             mt_array[i] = 4 * π * subhalo.rs^3 * subhalo.ρs * μ_halo(xt_one_sub, hpi.hp)
             nt_array[i] = 0
@@ -239,8 +333,10 @@ function tidal_scale(
         # the number of penetrative encounters
         np_array_temp = Vector{Int}(undef, 0)
 
+        #println("$xt_one_sub $r_host $(ns_array[i]) $m200 $(nc_array[i]) $(v_kms_array[i]) $(c_array[i])")
+
         # loop on disk crossings
-        while j < n_cross && xt_one_sub > T(1e-2)
+        while j < nc_array[i] && xt_one_sub > T(1e-2)
 
             xt_one_sub, μt_one_sub, np_one_sub = tidal_scale_one_crossing!(
                 xt_one_sub, 
@@ -251,8 +347,8 @@ function tidal_scale(
                 host, 
                 ns_array[i], 
                 arrays, 
-                stars, 
-                disk)
+                disk, 
+                stars)
 
             # add the number of penetrative encounters
             push!(np_array_temp, np_one_sub)
@@ -261,7 +357,10 @@ function tidal_scale(
             mt_one_sub = 4 * π * subhalo.rs^3 * subhalo.ρs * μt_one_sub
 
             # reverse velocity for next crossing
-            v_subhalo_kms[:, i] .= - v_subhalo_kms[:, i]
+            # y component does not change because on the second
+            # crossing the basis has turned
+            v_subhalo_kms[1, i] = - v_subhalo_kms[1, i]
+            v_subhalo_kms[3, i] = - v_subhalo_kms[3, i]
 
             # increment the number of crossings
             j = j+1
@@ -276,6 +375,19 @@ function tidal_scale(
      
     end
 
-    return MCResult(xt_array, mt_array, θ_array, v_kms_array, c_array, ns_array, nc_array, nt_array, np_array)
+    return MCResult(
+        r_host = r_host, 
+        m200 = m200, 
+        stars = stars, 
+        disk = disk, 
+        xt = xt_array, 
+        mt = mt_array, 
+        θ = θ_array,
+        v = v_kms_array,
+        c = c_array,
+        ns = ns_array, 
+        nc = nc_array, 
+        nt = nt_array, 
+        np = np_array)
 
 end

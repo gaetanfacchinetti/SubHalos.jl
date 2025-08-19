@@ -18,7 +18,9 @@
 
 module SubHalos
 
-import QuadGK, Roots, JLD2,  Interpolations, SpecialFunctions, Flux, Optimisers, Statistics, Random,  LinearAlgebra
+import QuadGK, Roots, JLD2, Interpolations, SpecialFunctions, Flux, Optimisers, Statistics, Random,  LinearAlgebra
+
+import JLD2: save
 
 import CosmoTools: median_concentration, SCP12, MassConcentrationModel, gravitational_potential, Cosmology, BkgCosmology
 import CosmoTools: dflt_cosmo, dflt_bkg_cosmo, planck18, orbital_frequency, HaloProfile, αβγProfile, plummerProfile
