@@ -18,7 +18,7 @@
 
 export tidal_scale, MCResult, mc_save, mc_load, append!, convert
 
-function tidal_scale( 
+function _tidal_scale( 
     xt::T,
     r_host::T,
     subhalo::H, 
@@ -249,8 +249,8 @@ function tidal_scale(
     hpi::HPI,
     host::HI,
     n::Int = 1,
-    stars::Bool = true,
     disk::Bool = true,
+    stars::Bool = true,
     z::T = T(0),
     cosmo::C = dflt_cosmo(T);
     nx::Int = 16,
@@ -258,6 +258,7 @@ function tidal_scale(
     nφ::Int = 16,
     n_cross::Int = -1,
     n_stars::Int = -1,
+    v_kms::T = -T(1),
     seed::Int = -1,
     ) where {
         T<:AbstractFloat,
@@ -274,9 +275,21 @@ function tidal_scale(
     # draw a given subhalo from the concentration distribution
     c_array = rand_concentration(n, m200, z)
 
-    # draw a 3D velocity for the subhalo and infer norm and direction
-    v_subhalo_kms = rand_3D_velocity_kms(n, r_host, host)
-    v_kms_array = sqrt.(sum(abs2, v_subhalo_kms; dims=1))[1, :]
+    # initialise 3 velocity vectors to v_kms in input
+    # assuming that they only have a component normal to the disk
+    v_subhalo_kms = fill(v_kms, 3, n)
+    v_subhalo_kms[1, :] .= T(0)
+    v_subhalo_kms[2, :] .= T(0)
+    v_kms_array = fill(v_kms, n)
+
+    # if the value of v_kms < 0 (as default) draw realistic velocities
+    if v_kms < 0
+        # draw a 3D velocity for the subhalo and infer norm and direction
+        v_subhalo_kms .= rand_3D_velocity_kms(n, r_host, host)
+        v_kms_array .= sqrt.(sum(abs2, v_subhalo_kms; dims=1))[1, :]
+    end
+    
+    # evaluate the angle of the subhalo direction with the normal of the disk
     θ_array = acos.(v_subhalo_kms[3, :] ./ v_kms_array)
 
     # evaluate the number of stellar encounters per crossings
@@ -315,7 +328,6 @@ function tidal_scale(
             period = 2 * π * convert_lengths(r_host, MegaParsecs, KiloMeters) / v_kms_array[i] # in seconds
             nc_array[i] = 2 * floor(Int, convert_times(age_host(z, host, cosmo.bkg), GigaYears, Seconds) / period)
         end
-
 
         # if no crossings of the disk we simply output the jacobi radius
         # if no contributions from disk shocking or stars output the jacobi radius
@@ -357,9 +369,8 @@ function tidal_scale(
             mt_one_sub = 4 * π * subhalo.rs^3 * subhalo.ρs * μt_one_sub
 
             # reverse velocity for next crossing
-            # y component does not change because on the second
+            # x and y component do not change because on the second
             # crossing the basis has turned
-            v_subhalo_kms[1, i] = - v_subhalo_kms[1, i]
             v_subhalo_kms[3, i] = - v_subhalo_kms[3, i]
 
             # increment the number of crossings

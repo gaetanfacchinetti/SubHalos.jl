@@ -84,6 +84,8 @@ function (dist::LogNormal{T})(x::T) where {T<:AbstractFloat}
     return 1 / K / x / sqrt(2 * π) / dist.σ * exp(-(log(x) - dist.med)^2 / 2 / dist.σ^2)
 end
 
+cdf(dist::SubHalos.LogNormal{T}, x::T) where {T<:AbstractFloat} = SpecialFunctions.erfc( - (log(x)  - dist.med) / sqrt(2) / dist.σ ) / 2
+cdf_inv(dist::SubHalos.LogNormal{T}, y::T) where {T<:AbstractFloat} = exp(dist.med - sqrt(2) * dist.σ * SpecialFunctions.erfcinv(2*y))
 
 function rand(dist::LogNormal{T}, n::Int = 1, rng::Random.AbstractRNG = Random.default_rng()) where {T<:AbstractFloat}
     
@@ -105,4 +107,3 @@ end
 
 
 pdf(dist::Distribution{T}, x::T) where {T<:AbstractFloat} = dist(x)
-#cdf(dist::D, x::T) where {T<:AbstractFloat, D<:Distribution{T}} = cdf(dist, x)

@@ -22,16 +22,16 @@ export pdf_concentration, rand_concentration, rand_concentration!
 ########################
 ## CONCENTRATION DISTRIBUTION
 
-std_mass_concentration(m::AbstractFloat, ::Type{SCP12}) = 0.14 * log(10.0)
-std_mass_concentration(m::AbstractFloat, ::Type{MCM}) where {MCM<:MassConcentrationModel} = std_mass_concentration(m, MCM)
+std_mass_concentration(m::T, ::Type{SCP12}) where {T<:AbstractFloat} = T(0.14 * log(10))
+std_mass_concentration(m::T, ::Type{MCM}) where {T<:AbstractFloat, MCM<:MassConcentrationModel} = std_mass_concentration(m, MCM)
 
 
-function pdf_concentration(c200::T, m200::T, z::T = T(0), cosmo::Cosmology{T, <:BkgCosmology{T}} = dflt_cosmo(), ::Type{MCM} = SCP12) where {T<:AbstractFloat, MCM<:MassConcentrationModel}
+function pdf_concentration(m200::T, z::T = T(0), cosmo::Cosmology{T, <:BkgCosmology{T}} = dflt_cosmo(T), ::Type{MCM} = SCP12) where {T<:AbstractFloat, MCM<:MassConcentrationModel}
    
     σ_c = std_mass_concentration(m200, MCM)
     median_c = median_concentration(m200, z, cosmo, MCM)
 
-    return LogNormal(log(median_c), σ_c)(c200)
+    return LogNormal(log(median_c), σ_c)
 end
 
 
